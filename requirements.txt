@@ -1,0 +1,5 @@
+# torch n'est pas listé ici : sur Linux, la roue PyPI par défaut emporte les
+# paquets CUDA (~2,7 Go) même sur une machine sans GPU. install.sh l'installe
+# depuis l'index qui convient à la plateforme, avant ce fichier.
+pocket-tts
+numpy

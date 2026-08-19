@@ -1,0 +1,121 @@
+#!/usr/bin/env bash
+# Client en ligne de commande du service gladyss : envoie du texte à prononcer sur
+# les haut-parleurs de la machine. Le service doit tourner (voir README).
+set -e
+
+# Lecture du fichier de configuration utilisateur si présent
+CONFIG_FILE=""
+if [ -f "$HOME/.config/gladyss/config.json" ]; then
+  CONFIG_FILE="$HOME/.config/gladyss/config.json"
+elif [ -f "$HOME/.config/say/config.json" ]; then
+  CONFIG_FILE="$HOME/.config/say/config.json"
+fi
+
+CFG_URL=""
+CFG_SPEED=""
+CFG_VOICE=""
+CFG_PITCH=""
+CFG_FX=""
+CFG_FORCE=""
+
+if [ -n "$CONFIG_FILE" ]; then
+  eval "$(python3 -c "
+import json, sys
+try:
+    with open(sys.argv[1]) as f:
+        d = json.load(f)
+    if 'addr' in d: print(f'CFG_URL=\"http://{d[\"addr\"]}\"')
+    elif 'url' in d: print(f'CFG_URL=\"{d[\"url\"]}\"')
+    if 'speed' in d: print(f'CFG_SPEED=\"{d[\"speed\"]}\"')
+    if 'voice' in d: print(f'CFG_VOICE=\"{d[\"voice\"]}\"')
+    if 'pitch' in d: print(f'CFG_PITCH=\"{d[\"pitch\"]}\"')
+    if 'fx' in d: print(f'CFG_FX=\"{d[\"fx\"]}\"')
+    if 'force' in d: print(f'CFG_FORCE=\"{d[\"force\"]}\"')
+except Exception:
+    pass
+" "$CONFIG_FILE")"
+fi
+
+SERVICE_URL="${GLADYSS_URL:-${SAY_URL:-${CFG_URL:-http://127.0.0.1:8420}}}"
+SPEED="${GLADYSS_SPEED:-${SAY_SPEED:-${CFG_SPEED:-1.0}}}"
+VOICE="${GLADYSS_VOICE:-${SAY_VOICE:-${CFG_VOICE:-}}}"
+PITCH="${GLADYSS_PITCH:-${SAY_PITCH:-${CFG_PITCH:-}}}"
+FX="${GLADYSS_FX:-${SAY_FX:-${CFG_FX:-}}}"
+FORCE="${GLADYSS_FORCE:-${SAY_FORCE:-${CFG_FORCE:-}}}"
+
+POSITIONAL=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --speed|-s) SPEED="$2"; shift 2 ;;
+    --voice|-v) VOICE="$2"; shift 2 ;;
+    --pitch|-p) PITCH="$2"; shift 2 ;;
+    --fx)       FX="$2"; shift 2 ;;
+    --force)    FORCE="$2"; shift 2 ;;
+    --stop)     curl -s -X POST "$SERVICE_URL/stop" >/dev/null; exit 0 ;;
+    --skip)     curl -s -X POST "$SERVICE_URL/skip" >/dev/null; exit 0 ;;
+    --help|-h)
+      cat <<'USAGE'
+Usage: gladyss [options] <message...>
+       echo "message" | gladyss
+
+Options:
+  -s, --speed <val>   Vitesse de parole (défaut: 1.0, ou $GLADYSS_SPEED)
+  -v, --voice <nom>   Voix à utiliser (gladyss --voices pour la liste)
+  -p, --pitch <val>   Hauteur de voix (0.5 à 2.0)
+      --fx <nom>      Effet sonore (gladyss --effects pour la liste)
+      --force <val>   Force de l'effet (0.0 à 2.0)
+      --stop          Interrompt la lecture et vide la file
+      --skip          Passe à l'énoncé suivant
+      --voices        Liste les voix disponibles
+      --effects       Liste les effets disponibles
+
+Variables d'environnement : GLADYSS_URL, GLADYSS_SPEED, GLADYSS_VOICE, GLADYSS_PITCH,
+GLADYSS_FX, GLADYSS_FORCE (ou préfixe legacy SAY_*) — mêmes valeurs que les options correspondantes.
+USAGE
+      exit 0 ;;
+    --voices)  curl -s "$SERVICE_URL/voices"; echo; exit 0 ;;
+    --effects) curl -s "$SERVICE_URL/effects"; echo; exit 0 ;;
+    *) POSITIONAL+=("$1"); shift ;;
+  esac
+done
+
+if [ ${#POSITIONAL[@]} -gt 0 ]; then
+  TEXT="${POSITIONAL[*]}"
+elif [ ! -t 0 ]; then
+  TEXT=$(cat)
+else
+  echo "Erreur: aucun texte fourni. Utilise 'gladyss \"texte\"' ou 'echo texte | gladyss'" >&2
+  exit 1
+fi
+
+# Le service est un exécutable qu'on lance soi-même : s'il ne répond pas, on le
+# dit plutôt que de deviner où il est installé.
+if ! curl -s --max-time 1 "$SERVICE_URL/health" >/dev/null 2>&1; then
+  echo "Erreur: aucun service sur $SERVICE_URL." >&2
+  echo "Lance-le depuis le dépôt (./gladyss), ou pointe GLADYSS_URL ailleurs." >&2
+  exit 1
+fi
+
+# Un effet avec sa force demande un corps JSON ; le reste tient dans l'URL.
+if [ -n "$FORCE" ] && [ -n "$FX" ]; then
+  JSON_DATA=$(python3 -c "
+import json, sys
+data = {'text': sys.argv[1], 'effects': [{'name': sys.argv[3], 'force': float(sys.argv[4])}]}
+if sys.argv[2]: data['speed'] = float(sys.argv[2])
+if sys.argv[5]: data['voice'] = sys.argv[5]
+if sys.argv[6]: data['pitch'] = float(sys.argv[6])
+print(json.dumps(data))
+" "$TEXT" "$SPEED" "$FX" "$FORCE" "$VOICE" "$PITCH")
+  curl -s -X POST "$SERVICE_URL/say" -H 'Content-Type: application/json' -d "$JSON_DATA" >/dev/null
+else
+  PARAMS=()
+  [ -n "$SPEED" ] && PARAMS+=("speed=$SPEED")
+  [ -n "$VOICE" ] && PARAMS+=("voice=$VOICE")
+  [ -n "$PITCH" ] && PARAMS+=("pitch=$PITCH")
+  [ -n "$FX" ]    && PARAMS+=("fx=$FX")
+  QUERY=""
+  if [ ${#PARAMS[@]} -gt 0 ]; then
+    QUERY="?"$(IFS='&'; echo "${PARAMS[*]}")
+  fi
+  curl -s -X POST "$SERVICE_URL/say$QUERY" -d "$TEXT" >/dev/null
+fi

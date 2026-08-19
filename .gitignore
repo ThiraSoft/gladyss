@@ -1,0 +1,30 @@
+# Environnement Python et artefacts de build
+.venv/
+__pycache__/
+# Le binaire construit, à la racine seulement : cli/gladyss et cli/say sont des fichiers du dépôt.
+/say
+/gladyss
+/.install-check.log
+
+# Voix clonées : échantillons et états de modèle. Ce sont des enregistrements
+# de personnes réelles, ils n'ont rien à faire dans un dépôt public.
+voix/
+*.wav
+*.safetensors
+
+# Archives de transfert : elles emportent voix/ avec elles.
+*.tar.gz
+
+# Résidus macOS
+.DS_Store
+._*
+
+# Configuration d'agents locale : elle contient des chemins absolus propres à
+# la machine, et n'a de sens que pour son propriétaire.
+.agents/
+
+# Journaux et PID d'exécutions manuelles
+*.log
+.say.pid
+.gladyss.pid
+nohup.out
