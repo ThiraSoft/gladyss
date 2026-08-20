@@ -9,8 +9,10 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/ThiraSoft/golem/pockettts"
 )
@@ -103,14 +105,30 @@ func (p *PocketTTS) voice(name string) (*pockettts.Voice, error) {
 	if v, ok := p.loaded[name]; ok {
 		return v, nil
 	}
-	path, err := p.catalog.resolve(name)
+	src, err := p.catalog.resolve(name)
 	if err != nil {
 		return nil, err
 	}
-	v, err := p.engine.LoadVoice(path)
-	if err != nil {
+
+	var v *pockettts.Voice
+	if src.clone {
+		// Encoder un enregistrement coûte quelques secondes ; on n'en paie le
+		// prix qu'une fois par voix et par machine, puisque l'état est écrit à
+		// côté du WAV et relu au démarrage suivant.
+		start := time.Now()
+		if v, err = p.engine.VoiceFromWAV(src.path); err != nil {
+			return nil, fmt.Errorf("cloning voice %q from %s: %w", name, src.path, err)
+		}
+		log.Printf("voice %q cloned from %s in %v", name, filepath.Base(src.path),
+			time.Since(start).Round(time.Millisecond))
+		if err := p.engine.SaveVoice(p.catalog.cache(name), v); err != nil {
+			// Le cache est un confort, pas une condition : la voix est prête.
+			log.Printf("voice %q: could not cache the encoded state: %v", name, err)
+		}
+	} else if v, err = p.engine.LoadVoice(src.path); err != nil {
 		return nil, fmt.Errorf("loading voice %q: %w", name, err)
 	}
+
 	p.loaded[name] = v
 	return v, nil
 }

@@ -290,17 +290,16 @@ coupe le son et rend la main.
 
 ## Cloner une voix
 
-> **Indisponible pour l'instant.** L'encodeur Mimi, qui transforme un
-> enregistrement en état de voix, vivait dans le daemon Python et n'existe pas
-> encore en Go. Cette section décrit le mécanisme tel qu'il était et tel qu'il
-> reviendra ; les mesures qu'elle contient restent valables. Une voix déjà
-> encodée en `.safetensors`, elle, se charge et se joue normalement.
-
 Pocket TTS sait imiter une voix à partir d'un simple extrait audio, sans
 entraînement : il encode l'extrait et s'en sert d'amorce pour la génération. Le
 service reprend ce mécanisme **sans nouvelle route** — une voix clonée est un
 fichier dans `voix/`, et elle apparaît dans `/voices` à côté des voix du
 catalogue. `?voice=`, `speed`, `pitch` et les effets marchent à l'identique.
+
+L'encodage se fait en Go, par `golem/pockettts` : poser un `.wav` dans `voix/`
+suffit, le service l'encode au premier usage et écrit l'état à côté. Rien
+d'autre à installer. Le seul prérequis est l'accès aux poids, ci-dessous, parce
+que le jeu publié sans clonage ne porte pas la projection que ça demande.
 
 ### 1. Obtenir l'accès aux poids
 
@@ -362,9 +361,9 @@ laisse 1 dBFS de marge de crête. Les sources de jeu arrivent normalisées à
 
 #### Quelle longueur de prompt ?
 
-Pocket TTS ne tronque **pas** le prompt : `truncate` vaut `False` par défaut et
-le daemon Python ne le demandait pas, donc un extrait de deux minutes était
-encodé en entier. Mais plus long n'est pas mieux — mesuré ici, même texte (~29 s de parole
+Pocket TTS ne tronque **pas** le prompt de lui-même. Le service refuse au-delà
+de soixante-dix secondes, pour la raison dite plus bas ; en deçà, tout
+l'enregistrement est encodé. Mais plus long n'est pas mieux — mesuré ici, même texte (~29 s de parole
 attendues) à chaque fois :
 
 | Prompt | Audio rendu | Cache | 1er appel |
@@ -397,14 +396,22 @@ Rien à déclarer : le service balaie `voix/` à chaque démarrage et annonce ce
 qu'il y trouve.
 
 ```bash
-go build -o say . && ./say
-curl localhost:8420/voices                        # gladyss y figure
+go build -o gladyss . && ./gladyss
+curl localhost:8420/voices                            # la voix y figure
 curl -X POST "localhost:8420/say?voice=gladyss" -d "Bonjour, sujet de test."
-./say -voice gladyss                              # ou par défaut, pour tout le service
+./gladyss -voice gladyss                              # ou par défaut, pour tout le service
 ```
 
-Le premier usage encodait le WAV, puis le daemon écrivait l'état du modèle dans
-`voix/<nom>.safetensors` : c'est ce fichier que le service relit aujourd'hui.
+Hors du service, `cmd/pocket-tts` de golem fait la même chose en une commande :
+
+```bash
+pocket-tts -clone voix/gladyss.wav -save-voice voix/gladyss.safetensors
+```
+
+Le premier usage encode le WAV, puis le service écrit l'état du modèle dans
+`voix/<nom>.safetensors` : les démarrages suivants le relisent directement.
+Mesuré ici, sur `gladyss.wav` (27,9 s) : 9,1 s pour le premier énoncé, clonage
+compris, puis 1,3 s.
 
 | Sur la même phrase courte | |
 |---|---|
@@ -652,7 +659,7 @@ machine que la deuxième, après la migration vers `golem/pockettts`.
 | Vitesse de synthèse | 2,7× le temps réel | 1,19× | **2,15 à 2,26×** |
 | Réveil du moteur (modèle en cache disque) | ~4 s | ~19 s, dont ~15 s d'import de torch | **~50 ms** (projection mémoire) |
 | Premier échantillon audio | ~200 ms après la requête | ~440 ms | **~200 ms**¹ |
-| Encodage d'un prompt de clonage de ~27 s | ~2,4 s | ~7 s | indisponible (cf. « Cloner une voix ») |
+| Encodage d'un prompt de clonage de ~27 s | ~2,4 s | ~7 s | **~7 s** (4,4 s d'encodage, 2,6 s d'écoute) |
 | Réaction à `/skip` et `/stop` | son coupé immédiatement, ~30 ms côté moteur | idem | idem, ~80 ms (une frame) |
 | Longueur de prompt exploitable | jusqu'à ~70 s ; au-delà, énoncés tronqués | idem | idem |
 
@@ -698,14 +705,9 @@ direct sur M3, et désormais aussi sur le i7, dont le débit est passé de 1,19�
   service : demander `pcm` pour un flux propre.
 - **Licence du modèle** : code MIT, poids CC-BY-4.0 — usage commercial autorisé
   avec attribution à Kyutai.
-- **Cloner une voix depuis un enregistrement n'est plus possible.** L'encodeur
-  Mimi, qui transforme un WAV en état de voix, n'existe pas encore en Go : il
-  vivait dans le daemon Python, parti avec lui. Une voix déjà encodée en
-  `.safetensors` — dont `voix/gladyss.safetensors` — marche exactement comme
-  avant ; un WAV seul est refusé avec un message qui le dit. Cf. « Cloner une
-  voix », qui décrit la marche à suivre telle qu'elle reviendra.
 - **Aucune voix n'est téléchargée automatiquement.** Le service lit le cache
-  HuggingFace, il ne le remplit pas. Cf. « Les voix ».
+  HuggingFace, il ne le remplit pas. Cf. « Les voix ». Le clonage, lui, ne
+  demande rien d'autre que les poids déjà là.
 - **Pas d'authentification, pas de limite de débit.** Écoute sur la boucle locale
   uniquement. Ne pas exposer tel quel sur un réseau.
 - **Un énoncé d'un seul mot peut sortir tronqué**, environ un rendu sur six. Le
