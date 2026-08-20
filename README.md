@@ -656,9 +656,11 @@ machine que la deuxième, après la migration vers `golem/pockettts`.
 | Réaction à `/skip` et `/stop` | son coupé immédiatement, ~30 ms côté moteur | idem | idem, ~80 ms (une frame) |
 | Longueur de prompt exploitable | jusqu'à ~70 s ; au-delà, énoncés tronqués | idem | idem |
 
-¹ Mesuré dans golem, pas à travers le service : à la vitesse par défaut de 1,1,
-le PCM de `/v1/audio/speech` traverse encore ffmpeg, qui tamponne — c'est ce que
-le chantier suivant retire.
+¹ Mesuré dans golem, pas à travers le service. À travers `/v1/audio/speech`, le
+premier son arrive plutôt vers 2 s, et **ce n'est pas ffmpeg** : la mesure donne
+1 987 ms avec la chaîne de filtres active (`speed 1.1`) contre 2 097 ms sans
+aucun filtre (`speed 1.0`). L'écart entre les 210 ms du moteur et ces 2 s reste
+à expliquer.
 
 La vitesse de synthèse est mesurée sur trois rendus de la même phrase de six
 secondes, moteur déjà chaud :
