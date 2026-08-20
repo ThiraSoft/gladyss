@@ -31,25 +31,56 @@ func TestResolveVoixLocale(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if filepath.Base(got) != "gladyss.safetensors" {
-		t.Errorf("resolve = %q, attendu le fichier local", got)
+	if filepath.Base(got.path) != "gladyss.safetensors" {
+		t.Errorf("resolve = %q, attendu le fichier local", got.path)
 	}
-	if !strings.HasPrefix(got, c.dir) {
-		t.Errorf("resolve = %q, attendu sous %q", got, c.dir)
+	if got.clone {
+		t.Error("un état précalculé n'a pas à être encodé")
+	}
+	if !strings.HasPrefix(got.path, c.dir) {
+		t.Errorf("resolve = %q, attendu sous %q", got.path, c.dir)
 	}
 }
 
-// Un WAV sans état précalculé n'est pas utilisable : le clonage demande
-// l'encodeur Mimi, qui viendra plus tard. L'erreur doit le dire.
+// Un WAV sans état précalculé est une voix à cloner : le moteur l'encodera au
+// premier usage et mettra le résultat en cache à côté.
 func TestResolveWavSeul(t *testing.T) {
 	c := catalogueDeTest(t, "essai.wav")
-	_, err := c.resolve("essai")
-	if err == nil {
-		t.Fatal("attendu une erreur pour un WAV sans .safetensors")
+	got, err := c.resolve("essai")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(err.Error(), "essai.wav") {
-		t.Errorf("erreur = %q, attendu qu'elle nomme le WAV", err)
+	if !got.clone {
+		t.Error("attendu un enregistrement à encoder")
 	}
+	if filepath.Base(got.path) != "essai.wav" {
+		t.Errorf("resolve = %q, attendu le WAV", got.path)
+	}
+}
+
+// L'état précalculé l'emporte sur le WAV dont il vient : c'est tout l'intérêt
+// du cache, et le WAV n'a plus à être relu.
+func TestResolvePrefereLEtatAuWav(t *testing.T) {
+	c := catalogueDeTest(t, "essai.wav", "essai.safetensors")
+	got, err := c.resolve("essai")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.clone {
+		t.Errorf("resolve = %+v, attendu l'état précalculé", got)
+	}
+}
+
+// Une voix n'existant que sous forme de WAV est tout de même annoncée : elle
+// est utilisable, au prix d'un encodage.
+func TestNamesContientLesWav(t *testing.T) {
+	c := catalogueDeTest(t, "essai.wav")
+	for _, n := range c.names() {
+		if n == "essai" {
+			return
+		}
+	}
+	t.Errorf("names = %v, attendu qu'il contienne essai", c.names())
 }
 
 func TestResolveInconnue(t *testing.T) {
