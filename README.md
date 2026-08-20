@@ -651,16 +651,27 @@ machine que la deuxième, après la migration vers `golem/pockettts`.
 |---|---|---|---|
 | Vitesse de synthèse | 2,7× le temps réel | 1,19× | **2,15 à 2,26×** |
 | Réveil du moteur (modèle en cache disque) | ~4 s | ~19 s, dont ~15 s d'import de torch | **~50 ms** (projection mémoire) |
-| Premier échantillon audio | ~200 ms après la requête | ~440 ms | ~210 ms côté moteur¹ |
+| Premier échantillon audio | ~200 ms après la requête | ~440 ms | **~200 ms**¹ |
 | Encodage d'un prompt de clonage de ~27 s | ~2,4 s | ~7 s | indisponible (cf. « Cloner une voix ») |
 | Réaction à `/skip` et `/stop` | son coupé immédiatement, ~30 ms côté moteur | idem | idem, ~80 ms (une frame) |
 | Longueur de prompt exploitable | jusqu'à ~70 s ; au-delà, énoncés tronqués | idem | idem |
 
-¹ Mesuré dans golem, pas à travers le service. À travers `/v1/audio/speech`, le
-premier son arrive plutôt vers 2 s, et **ce n'est pas ffmpeg** : la mesure donne
-1 987 ms avec la chaîne de filtres active (`speed 1.1`) contre 2 097 ms sans
-aucun filtre (`speed 1.0`). L'écart entre les 210 ms du moteur et ces 2 s reste
-à expliquer.
+¹ En flux (`"stream": true`), mesuré par `curl -w '%{time_starttransfer}'` sur
+la phrase ci-dessous. Le moteur seul rend sa première frame en 193 à 207 ms : le
+service n'ajoute donc rien, il pousse chaque frame dès qu'elle arrive.
+
+| | premier son | total |
+|---|---|---|
+| `stream`, sans filtre (`speed 1.0`) | 200 ms | 1,71 s |
+| `stream`, avec filtres (`speed 1.1`) | 310 ms | 1,84 s |
+| `stream`, avec filtres (`speed 1.6`) | 262 ms | 1,96 s |
+| sans `stream` | 1,94 s | 1,94 s |
+
+Sans `stream`, le premier octet **est** le dernier : le service tamponne l'énoncé
+entier pour écrire un WAV aux tailles réelles, plutôt qu'un en-tête menteur que
+les décodeurs stricts refusent. C'est le compromis décrit plus haut, pas une
+latence subie. La chaîne de filtres ffmpeg, elle, coûte au plus une centaine de
+millisecondes.
 
 La vitesse de synthèse est mesurée sur trois rendus de la même phrase de six
 secondes, moteur déjà chaud :
