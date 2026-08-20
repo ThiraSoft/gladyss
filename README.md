@@ -4,8 +4,10 @@ Un serveur HTTP sans authentification qui lit à voix haute, sur les haut-parleu
 de la machine, le texte qu'on lui envoie. Les demandes sont mises en file et lues
 une par une, dans l'ordre d'arrivée.
 
-La synthèse tourne entièrement en local via **Kyutai Pocket TTS** : aucun texte
-ne sort de la machine, aucune clé d'API, aucun quota.
+La synthèse tourne entièrement en local via **Kyutai Pocket TTS**, dont
+l'inférence est faite en Go pur par le paquet `pockettts` de
+[golem](https://github.com/ThiraSoft/golem) : aucun texte ne sort de la machine,
+aucune clé d'API, aucun quota, et aucun Python.
 
 ## Démarrage
 
@@ -14,31 +16,26 @@ ne sort de la machine, aucune clé d'API, aucun quota.
 ./gladyss
 ```
 
-`install.sh` vérifie les dépendances système, crée l'environnement Python du
-daemon, construit le binaire, installe le client `gladyss` (et son alias `say`) dans `~/.local/bin`, puis
-prononce une phrase pour vérifier que la chaîne audio marche de bout en bout.
-Il est idempotent : on le relance après un `git pull`. `--no-cli` saute
-l'installation du client, `--no-check` la vérification finale, `--bin-dir`
-change la destination du client.
+`install.sh` vérifie les dépendances système, construit le binaire, installe le
+client `gladyss` (et son alias `say`) dans `~/.local/bin`, puis prononce une
+phrase pour vérifier que la chaîne audio marche de bout en bout. Il est
+idempotent : on le relance après un `git pull`. `--no-cli` saute l'installation
+du client, `--no-check` la vérification finale, `--bin-dir` change la
+destination du client.
 
 À la main, si tu préfères :
 
 ```bash
-uv venv .venv
-# Sur Linux, la roue torch de PyPI emporte les paquets CUDA (~2,7 Go) même sans
-# GPU. Le daemon tourne sur CPU : on prend l'index qui va avec.
-uv pip install --python .venv/bin/python --index-url https://download.pytorch.org/whl/cpu torch
-uv pip install --python .venv/bin/python -r requirements.txt
 go build -o gladyss . && ./gladyss
 ```
 
-L'environnement complet pèse alors ~1 Go, contre 4,8 Go avec la roue CUDA. Sur
-macOS la roue PyPI est déjà sans CUDA, la première commande est inutile. Avec un
-GPU NVIDIA et l'envie de t'en servir, `./install.sh --cuda` garde la roue
-complète.
+C'est tout : l'inférence est en Go, par le paquet `pockettts` de
+[golem](https://github.com/ThiraSoft/golem). Pas de Python, pas de PyTorch, pas
+d'environnement virtuel — le binaire et les poids suffisent.
 
-Le service écoute sur `127.0.0.1:8420`. Le premier lancement télécharge le modèle
-(~1 Go, mis en cache par HuggingFace) ; les suivants démarrent en quelques secondes.
+Le service écoute sur `127.0.0.1:8420`. Les poids du modèle (~1 Go) sont
+attendus dans le cache HuggingFace, là où l'outillage de Kyutai les dépose ;
+gladyss les projette en mémoire, ce qui prend quelques millisecondes.
 
 `ffplay` et `ffmpeg` doivent être installés (`brew install ffmpeg` sur macOS,
 le paquet `ffmpeg` de ta distribution sur Linux) : le premier joue le son, le
@@ -195,11 +192,10 @@ Deux pièges, d'où le choix de `pcm` dans l'exemple :
   audio, la requête reste ouverte toute la durée du son : un timeout HTTP global
   côté client couperait l'audio en plein milieu.
 
-Les requêtes s'empilent : le tube du daemon est protégé par un verrou, une
-seconde requête attend son tour au lieu d'interrompre la première. Une
-déconnexion client envoie `cancel` au daemon, et le service ne relâche le tube
-qu'une fois ce `cancel` parti — sans quoi il atterrirait au milieu de l'énoncé
-suivant et le couperait (`engine.go`, `surveillerAnnulation`).
+Les requêtes s'empilent : l'état du modèle est unique, donc protégé par un
+verrou, et une seconde requête attend son tour au lieu d'interrompre la
+première. Une déconnexion client annule le contexte de sa propre synthèse, et
+d'elle seule.
 
 La voix réellement utilisée est renvoyée dans `X-Voix-Utilisee`, le taux
 d'échantillonnage dans `X-Sample-Rate` : sans quoi un client qui envoie un nom
@@ -210,7 +206,7 @@ pas revenir écrire les tailles réelles et laisse `0xFFFFFFFF`, ce que refusent
 les décodeurs stricts — dont `decodeAudioData` des navigateurs.
 
 Cette route ne touche pas à la file de lecture : rien n'apparaît dans `/queue`,
-`/skip` et `/stop` ne l'affectent pas. En revanche le daemon n'a qu'un tube :
+`/skip` et `/stop` ne l'affectent pas. En revanche le modèle n'a qu'un état :
 une synthèse demandée pendant une lecture sur les haut-parleurs attend son tour.
 
 **Brancher Nova dessus** — dans `~/.nova/default.json` :
@@ -253,24 +249,30 @@ Exemple de fichier `~/.config/gladyss/config.json` :
 -idle-timeout 15m          délai d'inactivité avant déchargement du modèle
 -player  ffplay            lecteur audio recevant du PCM sur stdin
 -converter ffmpeg          applique les filtres hors lecture (/v1/audio/speech)
--python  .venv/bin/python  interpréteur du daemon
--daemon  tts_daemon.py     script du daemon
 ```
 
-26 voix officielles Kyutai sont disponibles out-of-the-box : `alba`, `anna`, `azelma`, `bill_boerst`, `caro_davy`,
-`charles`, `cosette`, `eponine`, `estelle` (défaut public), `eve`, `fantine`, `george`,
-`giovanni`, `jane`, `javert`, `jean`, `juergen`, `lola`, `marius`, `mary`,
-`michael`, `paul`, `peter_yearsley`, `rafael`, `stuart_bell`, `vera`.
+Kyutai publie 26 voix officielles : `alba`, `anna`, `azelma`, `bill_boerst`,
+`caro_davy`, `charles`, `cosette`, `eponine`, `estelle` (défaut public), `eve`,
+`fantine`, `george`, `giovanni`, `jane`, `javert`, `jean`, `juergen`, `lola`,
+`marius`, `mary`, `michael`, `paul`, `peter_yearsley`, `rafael`, `stuart_bell`,
+`vera`.
 
-S'y ajoutent les éventuelles voix personnalisées clonées dans `voix/` (ex: `gladyss`, cf. « Cloner une
-voix »). `./gladyss -voice jean` change la voix par défaut ; `?voice=` la surcharge
-requête par requête. Chaque voix coûte ~2 s de préparation à son premier usage,
-puis reste en cache pour toute la vie du service ; celle passée à `-voice` est
-préchargée au démarrage, pour ne pas faire payer cette préparation au premier
-énoncé.
+**Celles qui sont disponibles sont celles déjà présentes dans le cache
+HuggingFace.** gladyss ne télécharge rien : il lit ce qui est là. C'est la
+contrepartie de la disparition de Python, dont la bibliothèque allait chercher
+une voix manquante toute seule. Pour en ajouter une, la récupérer depuis
+`kyutai/pocket-tts-without-voice-cloning` — elle y est publiée déjà encodée, un
+`.safetensors` par voix sous `languages/french_24l/embeddings/` — ou déposer le
+fichier directement dans `voix/`.
 
-Le catalogue vient du moteur lui-même (`GET /voices`), il n'est pas codé en dur :
-les voix clonées de `voix/` y apparaissent sans réglage, cf. « Cloner une voix ».
+S'y ajoutent les voix personnalisées de `voix/` (ex : `gladyss`).
+`./gladyss -voice jean` change la voix par défaut ; `?voice=` la surcharge
+requête par requête. Une voix coûte le temps de lire son fichier à son premier
+usage, puis reste en mémoire pour toute la vie du service ; celle passée à
+`-voice` est chargée au démarrage, pour qu'un nom faux se voie tout de suite.
+
+Le catalogue (`GET /voices`) n'est pas codé en dur : il est l'union de `voix/`
+et de ce que le cache HuggingFace contient.
 
 ### Les essayer toutes
 
@@ -288,10 +290,16 @@ coupe le son et rend la main.
 
 ## Cloner une voix
 
+> **Indisponible pour l'instant.** L'encodeur Mimi, qui transforme un
+> enregistrement en état de voix, vivait dans le daemon Python et n'existe pas
+> encore en Go. Cette section décrit le mécanisme tel qu'il était et tel qu'il
+> reviendra ; les mesures qu'elle contient restent valables. Une voix déjà
+> encodée en `.safetensors`, elle, se charge et se joue normalement.
+
 Pocket TTS sait imiter une voix à partir d'un simple extrait audio, sans
 entraînement : il encode l'extrait et s'en sert d'amorce pour la génération. Le
 service reprend ce mécanisme **sans nouvelle route** — une voix clonée est un
-fichier dans `voix/`, et elle apparaît dans `/voices` à côté des 26 voix du
+fichier dans `voix/`, et elle apparaît dans `/voices` à côté des voix du
 catalogue. `?voice=`, `speed`, `pitch` et les effets marchent à l'identique.
 
 ### 1. Obtenir l'accès aux poids
@@ -302,7 +310,7 @@ message qui rappelle la marche à suivre.
 
 1. Accepter les conditions sur <https://huggingface.co/kyutai/pocket-tts>
    (accès automatique, pas de validation manuelle).
-2. Se connecter localement : `.venv/bin/hf auth login`, ou exporter `HF_TOKEN`.
+2. Se connecter localement : `hf auth login`, ou exporter `HF_TOKEN`.
    Un jeton *fine-grained* doit porter la permission **« Read access to contents
    of all public gated repos you can access »**, sinon le téléchargement
    retourne `403` malgré les conditions acceptées.
@@ -355,8 +363,8 @@ laisse 1 dBFS de marge de crête. Les sources de jeu arrivent normalisées à
 #### Quelle longueur de prompt ?
 
 Pocket TTS ne tronque **pas** le prompt : `truncate` vaut `False` par défaut et
-le daemon ne le demande pas, donc un extrait de deux minutes est encodé en
-entier. Mais plus long n'est pas mieux — mesuré ici, même texte (~29 s de parole
+le daemon Python ne le demandait pas, donc un extrait de deux minutes était
+encodé en entier. Mais plus long n'est pas mieux — mesuré ici, même texte (~29 s de parole
 attendues) à chaque fois :
 
 | Prompt | Audio rendu | Cache | 1er appel |
@@ -385,7 +393,7 @@ s'améliore ensuite.
 
 ### 3. S'en servir
 
-Rien à déclarer : le daemon balaie `voix/` à chaque démarrage et annonce ce
+Rien à déclarer : le service balaie `voix/` à chaque démarrage et annonce ce
 qu'il y trouve.
 
 ```bash
@@ -395,8 +403,8 @@ curl -X POST "localhost:8420/say?voice=gladyss" -d "Bonjour, sujet de test."
 ./say -voice gladyss                              # ou par défaut, pour tout le service
 ```
 
-Le premier usage encode le WAV, puis le daemon écrit l'état du modèle dans
-`voix/<nom>.safetensors` : les démarrages suivants le relisent directement.
+Le premier usage encodait le WAV, puis le daemon écrivait l'état du modèle dans
+`voix/<nom>.safetensors` : c'est ce fichier que le service relit aujourd'hui.
 
 | Sur la même phrase courte | |
 |---|---|
@@ -410,7 +418,7 @@ disque — le cache est déjà couvert par le `.gitignore`, comme les WAV.
 
 Ce cache est un fichier dérivé : `preparer_voix.sh` le supprime quand il
 reconstruit le WAV, sans quoi un cache calculé sur l'ancien montage
-l'emporterait sur le nouveau, puisque le daemon préfère le `.safetensors`.
+l'emporterait sur le nouveau, puisque le service préfère le `.safetensors`.
 
 ### `gladyss`, clonée sur GLaDOS
 
@@ -468,39 +476,37 @@ Trois synthèses du même texte, à réglages rigoureusement identiques, ont don
 **34,2 s / 32,8 s / 40,1 s** — 22 % d'écart. La génération échantillonne, la durée
 n'est donc pas reproductible. Conséquence pour qui mesure : **comparer deux
 réglages sur un seul rendu chacun ne prouve rien sur le débit.** Le timbre et
-l'intelligibilité, eux, ne bougent pas. Un débit stable se réglerait sur `temp`
-dans le daemon, pas sur `speed`.
+l'intelligibilité, eux, ne bougent pas. Un débit stable se réglerait sur
+`Settings.Temperature`, pas sur `speed`.
 
 ## Architecture
 
 ```
 POST /say ──▶ Controller (file séquentielle) ──▶ PocketTTS ──▶ ffplay
                    │                                 │
-                /skip /stop                   daemon Python
-              (annule le contexte)         (modèle chargé 1 fois)
+                /skip /stop                golem/pockettts
+              (annule le contexte)      (dans ce processus)
                                                      │
 POST /v1/audio/speech ───────────────────────────────┘──▶ ffmpeg ──▶ WAV
         (rendu au client, hors file)                      (filtres)
 ```
 
-Autour du service, deux fichiers d'outillage : `install.sh` monte l'environnement
-et construit le binaire, `cli/say` est le client en ligne de commande.
+Autour du service, deux fichiers d'outillage : `install.sh` construit le binaire,
+`cli/say` est le client en ligne de commande.
 
-Le service lui-même tient en quatre pièces, chacune testable seule :
+Le service lui-même tient en cinq pièces, chacune testable seule :
 
 - **`controller.go`** — la file d'`Enonce` (texte + voix). Un seul à la fois ;
   `Skip` et `Stop` annulent le contexte de l'énoncé en cours. Ne connaît rien
   à l'audio.
-- **`engine.go`** — le pont vers le moteur. Parle un protocole ligne-JSON +
-  charge binaire avec le daemon, et pousse le PCM soit dans `ffplay` (lecture),
-  soit dans `ffmpeg` puis dans un tampon (`Synthetiser`, pour la route
-  compatible OpenAI). Les deux chemins partagent la même chaîne de filtres :
-  à réglages égaux, ils sonnent pareil.
-- **`tts_daemon.py`** — le moteur. Charge le modèle une seule fois (sinon 20 s
-  par énoncé), découpe le texte en phrases et émet l'audio au fil de l'eau.
-  C'est lui qui résout les noms de voix : ceux du catalogue Pocket TTS, et ceux
-  des fichiers de `voix/` pour les voix clonées.
-
+- **`engine.go`** — le moteur. Charge les poids une fois (projection mémoire,
+  quelques millisecondes) et synthétise dans ce processus, par
+  `golem/pockettts` : les frames de 80 ms arrivent par un callback et partent
+  aussitôt, soit dans `ffplay` (lecture), soit dans `ffmpeg` puis dans un
+  tampon (`SynthesizeTo`, pour la route compatible OpenAI). Les deux chemins
+  partagent la même chaîne de filtres : à réglages égaux, ils sonnent pareil.
+- **`voices.go`** — la résolution des noms de voix. `voix/` d'abord, puis le
+  catalogue Kyutai du cache HuggingFace.
 - **`pacing.go`** — le régulateur de lecture. Le daemon génère à environ 1,2 ×
   le temps réel : au-delà de `speed = 1`, le lecteur consommerait l'audio plus
   vite qu'il n'arrive et se retrouverait à sec en pleine phrase. Le régulateur
@@ -512,10 +518,12 @@ Le service lui-même tient en quatre pièces, chacune testable seule :
   son à ~0,3 s à `speed 1.1`, contre la durée complète de la génération quand
   l'énoncé était bufférisé en entier.
 
-Le daemon reste en vie pour toute la durée du service ; c'est ce qui rend la
-latence acceptable. L'annulation est coopérative : le service envoie `cancel`,
-le daemon s'arrête entre deux chunks (~30 ms) et le service continue de vider le
-tube jusqu'au message de fin pour ne pas désynchroniser le protocole.
+Le modèle reste chargé pour toute la durée du service, ou jusqu'à
+`-idle-timeout` ; c'est ce qui rend la latence acceptable. L'annulation passe
+par le contexte de l'énoncé : `Settings.Ctx` arrête la génération à la frame
+suivante, et le lecteur est tué dans la foulée pour que le son cesse aussi.
+Rien ne peut fuir sur l'énoncé suivant — il n'y a plus de tube partagé où un
+`cancel` tardif pouvait atterrir.
 
 ### Les effets sonores
 
@@ -576,8 +584,8 @@ pas, les autres sont translittérés vers une graphie de même prononciation. Se
 `ï` est un compromis assumé — « naïf » → « naif » perd le tréma, mais un tréma en
 octets bruts coûtait le mot entier.
 
-Les retours à la ligne, eux, sont préservés : le daemon s'en sert pour découper
-les phrases (`decouper()`), les écraser changerait la prosodie.
+Les retours à la ligne, eux, sont préservés : le moteur s'en sert pour découper
+les phrases, les écraser changerait la prosodie.
 
 ### Les phrases courtes et le seuil de fin de parole
 
@@ -640,7 +648,7 @@ le poste dominant, tout le reste en découle.
 |---|---|---|
 | Vitesse de synthèse | 2,7× le temps réel (RTF 0,37) | 1,19× le temps réel (RTF 0,84) |
 | Premier échantillon audio | ~200 ms après la requête | ~440 ms après la requête |
-| Réveil du moteur (modèle en cache disque) | ~4 s | ~19 s, dont ~15 s d'import de torch |
+| Réveil du moteur (modèle en cache disque) | ~4 s | **~20 ms** (projection mémoire ; ~19 s avec le daemon Python, dont ~15 s d'import de torch) |
 | Encodage d'un prompt de clonage de ~27 s | ~2,4 s | ~7 s |
 | Réaction à `/skip` et `/stop` | son coupé immédiatement, ~30 ms côté moteur | idem |
 | Longueur de prompt exploitable | jusqu'à ~70 s ; au-delà, énoncés tronqués | idem |
@@ -655,17 +663,20 @@ direct sur M3, et de justesse sur le i7.
 
 - **Une seule instance de lecture.** C'est voulu : le service parle sur des
   haut-parleurs, pas dans un flux réseau. `/v1/audio/speech`, elle, rend bien
-  l'audio au client — mais partage le tube du daemon, donc sa requête attend la
+  l'audio au client — mais partage l'état du modèle, donc sa requête attend la
   fin de l'énoncé en cours de lecture.
 - **Un WAV streamé annonce des tailles fausses.** Contrainte du format, pas du
   service : demander `pcm` pour un flux propre.
 - **Licence du modèle** : code MIT, poids CC-BY-4.0 — usage commercial autorisé
   avec attribution à Kyutai.
-- **Le clonage exige un accès sous conditions.** Il faut accepter celles du
-  dépôt `kyutai/pocket-tts` sur HuggingFace puis `hf auth login`. À défaut, le
-  service tourne sur le modèle sans clonage et son catalogue de 26 voix ; les
-  voix de `voix/` sont annoncées mais refusées, avec le message qui explique
-  quoi faire. Cf. « Cloner une voix ».
+- **Cloner une voix depuis un enregistrement n'est plus possible.** L'encodeur
+  Mimi, qui transforme un WAV en état de voix, n'existe pas encore en Go : il
+  vivait dans le daemon Python, parti avec lui. Une voix déjà encodée en
+  `.safetensors` — dont `voix/gladyss.safetensors` — marche exactement comme
+  avant ; un WAV seul est refusé avec un message qui le dit. Cf. « Cloner une
+  voix », qui décrit la marche à suivre telle qu'elle reviendra.
+- **Aucune voix n'est téléchargée automatiquement.** Le service lit le cache
+  HuggingFace, il ne le remplit pas. Cf. « Les voix ».
 - **Pas d'authentification, pas de limite de débit.** Écoute sur la boucle locale
   uniquement. Ne pas exposer tel quel sur un réseau.
 - **Un énoncé d'un seul mot peut sortir tronqué**, environ un rendu sur six. Le
@@ -680,12 +691,16 @@ direct sur M3, et de justesse sur le i7.
 go test -race ./...
 ```
 
-78 tests couvrent la file (ordre, séquentialité, skip, stop, positions, arrêt),
+84 tests couvrent la file (ordre, séquentialité, skip, stop, positions, arrêt),
 les routes HTTP (formats d'entrée, voix, vitesse, hauteur, effets, validation),
 la route compatible OpenAI (en-tête WAV, PCM brut, streaming, formats refusés,
-voix inconnue tolérée, aucun passage par la file), l'ordre d'émission des
-commandes vers le daemon face à un client qui se déconnecte, le calcul des
-chaînes de filtres ffmpeg, le décodage du protocole binaire, la transmission de
-`-voice` au daemon et la remontée des erreurs de celui-ci — rendues à l'appelant,
-sans désynchroniser le tube et sans transformer un skip en panne. Ils utilisent un faux moteur : ils sont instantanés et ne produisent
-aucun son.
+voix inconnue tolérée, aucun passage par la file), la résolution des noms de
+voix (locale, catalogue, WAV seul, inconnue), le calcul des chaînes de filtres
+ffmpeg et la régulation de lecture. La plupart utilisent un faux moteur : ils
+sont instantanés et ne produisent aucun son.
+
+Cinq d'entre eux chargent le vrai modèle et vérifient ce qu'aucun faux ne peut
+dire — que la synthèse rend du PCM non silencieux au bon taux, qu'un contexte
+annulé l'interrompt, qu'une voix inconnue est refusée par son nom. Ils sautent
+proprement si les poids ne sont pas dans le cache, pour qu'un clone nu reste
+vert.
