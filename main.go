@@ -39,8 +39,6 @@ type userConfig struct {
 	IdleTimeout  string   `json:"idle_timeout"`
 	Player       string   `json:"player"`
 	Converter    string   `json:"converter"`
-	Python       string   `json:"python"`
-	Daemon       string   `json:"daemon"`
 }
 
 func loadUserConfig() userConfig {
@@ -140,14 +138,6 @@ func main() {
 		}
 	}
 
-	defPython := ".venv/bin/python"
-	if cfg.Python != "" {
-		defPython = cfg.Python
-	}
-	defDaemon := "tts_daemon.py"
-	if cfg.Daemon != "" {
-		defDaemon = cfg.Daemon
-	}
 	defPlayer := "ffplay"
 	if cfg.Player != "" {
 		defPlayer = cfg.Player
@@ -159,8 +149,6 @@ func main() {
 
 	addr := flag.String("addr", defAddr, "listen address")
 	voice := flag.String("voice", defVoice, "voice: the 26 from the Pocket TTS catalog or a cloned voice from voix/ (see README)")
-	python := flag.String("python", defPython, "daemon's Python interpreter")
-	script := flag.String("daemon", defDaemon, "synthesis daemon script")
 	player := flag.String("player", defPlayer, "audio player receiving PCM on stdin")
 	converter := flag.String("converter", defConverter, "converter applying filters outside playback (/v1/audio/speech)")
 	speed := flag.Float64("speed", defSpeed, "default speech rate (0.5 to 3.0)")
@@ -174,8 +162,6 @@ func main() {
 	// Les chemins par défaut sont relatifs au binaire : le service reste
 	// lançable depuis n'importe quel répertoire.
 	root := binaryDir()
-	pythonPath := resolve(root, *python)
-	scriptPath := resolve(root, *script)
 
 	if !validSpeed(*speed) {
 		log.Fatalf("speed %v out of bounds: expected between %v and %v", *speed, speedMin, speedMax)
@@ -184,10 +170,12 @@ func main() {
 		log.Fatalf("pitch %v out of bounds: expected between %v and %v", *pitch, pitchMin, pitchMax)
 	}
 
-	// Le daemon Python et son modèle ne démarrent qu'au premier énoncé — le
-	// service reste léger tant que personne ne parle.
+	// Le modèle n'est chargé qu'au premier énoncé — le service reste léger tant
+	// que personne ne parle. Le chargement est une projection mémoire : il coûte
+	// désormais des millisecondes, là où le daemon Python coûtait des secondes.
+	voicesDir := resolve(root, "voix")
 	engine := NewLazyEngine(func() (*PocketTTS, error) {
-		return NewPocketTTS(pythonPath, scriptPath, *voice, *player, *converter,
+		return NewPocketTTS(voicesDir, *voice, *player, *converter,
 			*speed, *pitch, *eosThreshold)
 	}, *idleTimeout)
 	defer engine.Close()

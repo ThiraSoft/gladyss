@@ -1,11 +1,9 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"context"
-	"encoding/json"
-	"errors"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"log"
@@ -13,48 +11,17 @@ import (
 	"os/exec"
 	"strconv"
 	"sync"
+
+	"github.com/ThiraSoft/golem/pockettts"
 )
 
-// message est un en-tête du protocole émis par le daemon Python.
-type message struct {
-	Type       string   `json:"type"`
-	Bytes      int      `json:"bytes"`
-	Cancelled  bool     `json:"cancelled"`
-	Message    string   `json:"message"`
-	SampleRate int      `json:"sample_rate"`
-	Language   string   `json:"language"`
-	Voices     []string `json:"voices"`
-}
-
-// readMessage lit un en-tête JSON et, pour un message audio, exactement les
-// octets annoncés. Toute lecture partielle est une erreur : le flux serait
-// désynchronisé pour tous les messages suivants.
-func readMessage(r *bufio.Reader) (message, []byte, error) {
-	line, err := r.ReadBytes('\n')
-	if err != nil {
-		return message{}, nil, err
-	}
-
-	var msg message
-	if err := json.Unmarshal(line, &msg); err != nil {
-		return message{}, nil, fmt.Errorf("unreadable header %q: %w", line, err)
-	}
-	if msg.Bytes == 0 {
-		return msg, nil, nil
-	}
-
-	payload := make([]byte, msg.Bytes)
-	if _, err := io.ReadFull(r, payload); err != nil {
-		return msg, nil, fmt.Errorf("truncated audio payload (%d bytes expected): %w", msg.Bytes, err)
-	}
-	return msg, payload, nil
-}
-
-// PocketTTS pilote le daemon Python et pousse l'audio produit vers un lecteur.
+// PocketTTS synthétise dans ce processus, par le moteur Go de golem, et pousse
+// l'audio produit vers un lecteur. Il n'y a plus ni tube ni daemon : les frames
+// arrivent par un callback, au fil de la génération.
 type PocketTTS struct {
-	cmd    *exec.Cmd
-	stdin  io.WriteCloser
-	stdout *bufio.Reader
+	engine   *pockettts.Engine
+	catalog  *voiceCatalog
+	settings pockettts.Settings
 
 	sampleRate   int
 	defaultVoice string
@@ -64,81 +31,148 @@ type PocketTTS struct {
 	player       string
 	converter    string
 
-	mu sync.Mutex // sérialise les échanges : un seul énoncé à la fois sur le tube
+	mu     sync.Mutex                  // un énoncé à la fois : l'état du modèle est unique
+	loaded map[string]*pockettts.Voice // voix déjà chargées, protégé par mu
 	// rate est le débit de génération observé au dernier énoncé accéléré, en ×
-	// temps réel. Protégé par mu, comme le tube.
+	// temps réel. Protégé par mu.
 	rate float64
 }
 
-// NewPocketTTS démarre le daemon et attend qu'il ait chargé le modèle.
-// player joue l'audio sur les haut-parleurs ; converter applique la même
-// chaîne de filtres hors lecture, pour la synthèse rendue au client HTTP.
-// eosThreshold règle la détection de fin de parole du modèle (cf. main.go).
-func NewPocketTTS(python, script, voice, player, converter string, speed, pitch, eosThreshold float64) (*PocketTTS, error) {
-	cmd := exec.Command(python, "-u", script)
-	cmd.Stderr = os.Stderr
-	// Le daemon précharge une voix au démarrage pour épargner sa préparation à
-	// la première requête. Sans cette variable il précharge la sienne, en dur,
-	// et `-voice` ferait payer la préparation au premier énoncé — voire un
-	// clonage complet s'il s'agit d'une voix de voix/.
-	// Le seuil d'EOS passe par l'environnement pour la même raison : il est lu au
-	// chargement du modèle, avant que le protocole ne soit ouvert.
-	cmd.Env = append(os.Environ(),
-		"GLADYSS_DEFAULT_VOICE="+voice,
-		"SAY_DEFAULT_VOICE="+voice,
-		"GLADYSS_EOS_THRESHOLD="+strconv.FormatFloat(eosThreshold, 'g', -1, 64),
-		"SAY_EOS_THRESHOLD="+strconv.FormatFloat(eosThreshold, 'g', -1, 64),
-	)
-
-	stdin, err := cmd.StdinPipe()
+// NewPocketTTS charge le modèle et la voix par défaut. voicesDir est le
+// répertoire des voix locales ; player joue l'audio sur les haut-parleurs,
+// converter applique la même chaîne de filtres hors lecture, pour la synthèse
+// rendue au client HTTP. eosThreshold règle la détection de fin de parole du
+// modèle (cf. main.go).
+func NewPocketTTS(voicesDir, voice, player, converter string, speed, pitch, eosThreshold float64) (*PocketTTS, error) {
+	lang, err := pockettts.LookupLanguage(pockettts.DefaultLanguage)
 	if err != nil {
 		return nil, err
 	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, err
+	weights := pockettts.Locate(lang.WeightsPath())
+	if weights == "" {
+		return nil, fmt.Errorf("no Pocket TTS weights for %s in the Hugging Face cache", lang.Name)
 	}
-	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("starting daemon: %w", err)
+	tokenizer := pockettts.Locate(lang.TokenizerPath())
+	if tokenizer == "" {
+		return nil, fmt.Errorf("no Pocket TTS tokenizer for %s in the Hugging Face cache", lang.Name)
 	}
 
+	engine, err := pockettts.Open(pockettts.Options{
+		Weights: weights, Tokenizer: tokenizer, Language: lang.Name,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("loading the model: %w", err)
+	}
+
+	// Le seuil est posé explicitement, y compris à zéro : c'est une vraie
+	// valeur, réglée après mesure, et non un champ laissé vide.
+	settings := pockettts.DefaultSettings(lang)
+	settings.EndThreshold = eosThreshold
+
+	catalog := newVoiceCatalog(voicesDir, lang)
 	p := &PocketTTS{
-		cmd:          cmd,
-		stdin:        stdin,
-		stdout:       bufio.NewReaderSize(stdout, 1<<16),
+		engine:       engine,
+		catalog:      catalog,
+		settings:     settings,
+		sampleRate:   pockettts.SampleRate,
 		defaultVoice: voice,
 		defaultSpeed: speed,
 		defaultPitch: pitch,
+		voices:       catalog.names(),
 		player:       player,
 		converter:    converter,
+		loaded:       map[string]*pockettts.Voice{},
 	}
 
-	msg, _, err := readMessage(p.stdout)
-	if err != nil {
-		return nil, fmt.Errorf("daemon did not signal readiness: %w", err)
+	// La voix par défaut est chargée maintenant plutôt qu'au premier énoncé :
+	// c'est la seule préparation qui coûte, et un nom faux doit se voir au
+	// démarrage, pas à la première phrase.
+	if _, err := p.voice(voice); err != nil {
+		engine.Close()
+		return nil, err
 	}
-	if msg.Type != "ready" {
-		return nil, fmt.Errorf("unexpected message at startup: %+v", msg)
-	}
-	p.sampleRate = msg.SampleRate
-	p.voices = msg.Voices
+
 	log.Printf("engine ready — %s, %d Hz, %d voices, %s by default",
-		msg.Language, msg.SampleRate, len(msg.Voices), voice)
+		lang.Name, p.sampleRate, len(p.voices), voice)
 	return p, nil
+}
+
+// voice charge une voix, ou rend celle déjà en mémoire. L'appelant tient mu,
+// sauf au démarrage où personne d'autre ne touche encore la structure.
+func (p *PocketTTS) voice(name string) (*pockettts.Voice, error) {
+	if v, ok := p.loaded[name]; ok {
+		return v, nil
+	}
+	path, err := p.catalog.resolve(name)
+	if err != nil {
+		return nil, err
+	}
+	v, err := p.engine.LoadVoice(path)
+	if err != nil {
+		return nil, fmt.Errorf("loading voice %q: %w", name, err)
+	}
+	p.loaded[name] = v
+	return v, nil
+}
+
+// generate synthétise l'énoncé et écrit le PCM dans out au fil de la
+// génération. C'est le seul endroit qui parle au moteur ; Speak et
+// SynthesizeTo ne diffèrent que par la destination et par ce qu'ils en font.
+//
+// L'écriture au fil de l'eau est ce qui permet de commencer à jouer avant la
+// fin de la génération : le moteur rend une frame de 80 ms à la fois, il n'y a
+// aucune raison de les retenir.
+func (p *PocketTTS) generate(ctx context.Context, e Utterance, out io.Writer) error {
+	name := e.Voice
+	if name == "" {
+		name = p.defaultVoice
+	}
+	v, err := p.voice(name)
+	if err != nil {
+		return err
+	}
+
+	settings := p.settings
+	settings.Ctx = ctx
+	// Une erreur d'écriture n'arrête pas la génération par elle-même : le
+	// lecteur tué par une annulation est le cas normal, et le contexte le dit
+	// déjà. On jette les frames suivantes plutôt que d'écrire dans un tube mort.
+	broken := false
+	settings.Frame = func(samples []float32) {
+		if broken {
+			return
+		}
+		if _, err := out.Write(pcmBytes(samples)); err != nil {
+			broken = true
+		}
+	}
+
+	_, err = p.engine.Synthesize(e.Text, v, &settings)
+	return err
+}
+
+// pcmBytes convertit des échantillons de [-1, 1] en PCM signé 16 bits little-endian,
+// le format que ffplay et l'en-tête WAV attendent. Les valeurs hors bornes sont
+// écrêtées : le modèle en produit rarement, et un débordement s'entendrait bien
+// plus qu'un écrêtage.
+func pcmBytes(samples []float32) []byte {
+	out := make([]byte, 2*len(samples))
+	for i, s := range samples {
+		v := s * 32767
+		if v > 32767 {
+			v = 32767
+		} else if v < -32768 {
+			v = -32768
+		}
+		binary.LittleEndian.PutUint16(out[2*i:], uint16(int16(v)))
+	}
+	return out
 }
 
 // Speak synthétise le texte et le joue jusqu'au bout, sauf annulation du contexte.
 func (p *PocketTTS) Speak(ctx context.Context, e Utterance) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-
-	voice := e.Voice
-	if voice == "" {
-		voice = p.defaultVoice
-	}
-	if err := p.send(map[string]string{"cmd": "say", "text": e.Text, "voice": voice}); err != nil {
-		return err
-	}
 
 	speed := e.Speed
 	if speed == 0 {
@@ -148,6 +182,7 @@ func (p *PocketTTS) Speak(ctx context.Context, e Utterance) error {
 	if pitch == 0 {
 		pitch = p.defaultPitch
 	}
+
 	player := exec.Command(p.player, playerArgs(p.sampleRate, speed, pitch, e.Effects)...)
 	playerStdin, err := player.StdinPipe()
 	if err != nil {
@@ -158,28 +193,33 @@ func (p *PocketTTS) Speak(ctx context.Context, e Utterance) error {
 		return fmt.Errorf("starting audio player %q: %w", p.player, err)
 	}
 
-	// À l'annulation : on coupe le son immédiatement et on demande au daemon
-	// d'abandonner la génération. La boucle ci-dessous continue de drainer le
-	// tube jusqu'au "end" pour ne pas désynchroniser le protocole.
-	defer p.watchCancellation(ctx, func() {
-		if player.Process != nil {
-			_ = player.Process.Kill()
+	// À l'annulation, le son doit cesser immédiatement : la génération s'arrête
+	// d'elle-même par le contexte, mais le lecteur a déjà de l'audio en réserve.
+	stopWatch := make(chan struct{})
+	watchDone := make(chan struct{})
+	go func() {
+		defer close(watchDone)
+		select {
+		case <-ctx.Done():
+			if player.Process != nil {
+				_ = player.Process.Kill()
+			}
+		case <-stopWatch:
 		}
-	})()
+	}()
 
-	// À vitesse normale ou ralentie, le lecteur ne peut pas dépasser le daemon :
+	// À vitesse normale ou ralentie, le lecteur ne peut pas dépasser le moteur :
 	// on lui donne l'audio dès qu'il arrive, c'est le chemin le plus court vers
 	// le premier son. Au-delà de 1×, il consommerait plus vite qu'on ne produit
 	// et s'affamerait en cours d'énoncé ; pacedWriter mesure le débit réel et ne
-	// retient que l'avance strictement nécessaire — là où cette fonction
-	// bufférisait l'énoncé entier, soit une latence égale à toute sa génération.
-	var daemonErr error
+	// retient que l'avance strictement nécessaire.
+	var genErr error
 	if speed <= 1.0 {
-		daemonErr = p.pumpAudio(playerStdin)
+		genErr = p.generate(ctx, e, playerStdin)
 	} else {
 		pacer := newPacedWriter(playerStdin, p.sampleRate, speed, e.Text, p.rate)
-		daemonErr = p.pumpAudio(pacer)
-		if daemonErr == nil {
+		genErr = p.generate(ctx, e, pacer)
+		if genErr == nil {
 			_ = pacer.Flush()
 		}
 		if pacer.rate > 0 {
@@ -187,13 +227,12 @@ func (p *PocketTTS) Speak(ctx context.Context, e Utterance) error {
 		}
 	}
 
+	close(stopWatch)
+	<-watchDone
 	_ = playerStdin.Close()
 	_ = player.Wait() // attend la fin de la lecture : garantit la séquentialité
 
-	if daemonErr != nil {
-		return daemonErr
-	}
-	return ctx.Err()
+	return genErr
 }
 
 // Synthesize produit l'audio d'un énoncé et le renvoie au lieu de le jouer.
@@ -220,14 +259,6 @@ func (p *PocketTTS) SynthesizeTo(ctx context.Context, e Utterance, out io.Writer
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	voice := e.Voice
-	if voice == "" {
-		voice = p.defaultVoice
-	}
-	if err := p.send(map[string]string{"cmd": "say", "text": e.Text, "voice": voice}); err != nil {
-		return p.sampleRate, err
-	}
-
 	speed := e.Speed
 	if speed == 0 {
 		speed = p.defaultSpeed
@@ -241,7 +272,7 @@ func (p *PocketTTS) SynthesizeTo(ctx context.Context, e Utterance, out io.Writer
 	var converter *exec.Cmd
 	var converterStdin io.WriteCloser
 
-	// Sans filtre à appliquer, le PCM du daemon est déjà celui qu'on veut :
+	// Sans filtre à appliquer, le PCM du moteur est déjà celui qu'on veut :
 	// inutile de payer un processus de plus.
 	if filter := audioFilters(p.sampleRate, speed, pitch, e.Effects); filter != "" {
 		converter = exec.Command(p.converter, converterArgs(p.sampleRate, filter)...)
@@ -257,106 +288,16 @@ func (p *PocketTTS) SynthesizeTo(ctx context.Context, e Utterance, out io.Writer
 		dest = converterStdin
 	}
 
-	// À l'annulation (client déconnecté) : on demande au daemon d'abandonner,
-	// mais on continue de drainer le tube jusqu'au "end" pour ne pas
-	// désynchroniser le protocole pour l'énoncé suivant.
-	defer p.watchCancellation(ctx, nil)()
-
-	daemonErr := p.pumpAudio(dest)
+	genErr := p.generate(ctx, e, dest)
 
 	if converter != nil {
 		_ = converterStdin.Close()
 		convErr := converter.Wait()
-		if daemonErr == nil && ctx.Err() == nil && convErr != nil {
+		if genErr == nil && convErr != nil {
 			return p.sampleRate, fmt.Errorf("audio conversion: %w", convErr)
 		}
 	}
-
-	if daemonErr != nil {
-		return p.sampleRate, daemonErr
-	}
-	return p.sampleRate, ctx.Err()
-}
-
-// watchCancellation surveille le contexte : à l'annulation, le daemon reçoit
-// « cancel » pour abandonner la génération en cours. La fonction rendue arrête
-// la surveillance et n'a rendu la main que lorsque plus aucun « cancel » ne peut
-// partir.
-//
-// Cette attente est ce qui empêche une requête d'annuler la SUIVANTE. Le
-// contexte d'une requête HTTP est annulé dès que le client a fini de lire la
-// réponse — soit à l'instant précis où l'énoncé suivant prend le tube. Sans
-// elle, le « cancel » pouvait être écrit après le « say » suivant et couper cet
-// énoncé-là en pleine génération. Le verrou p.mu étant relâché après cet appel,
-// l'ordre sur le tube est garanti : cancel(N) puis say(N+1), que le daemon
-// neutralise en remettant son drapeau à zéro avant chaque say.
-func (p *PocketTTS) watchCancellation(ctx context.Context, also func()) func() {
-	stop := make(chan struct{})
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		select {
-		case <-ctx.Done():
-			_ = p.send(map[string]string{"cmd": "cancel"})
-			if also != nil {
-				also()
-			}
-		case <-stop:
-		}
-	}()
-	return func() {
-		close(stop)
-		<-done
-	}
-}
-
-// pumpAudio transfère l'audio du daemon vers le lecteur jusqu'au message "end".
-//
-// Une erreur du daemon n'interrompt pas la boucle : le protocole veut qu'un
-// "end" suive toujours, et le tube resterait désynchronisé si on rendait la main
-// avant. Elle est retenue puis rendue à l'appelant, qui seul sait à qui la dire
-// — sans quoi un client qui demande une voix indisponible reçoit un « aucun
-// audio produit » là où le daemon avait écrit quoi corriger.
-func (p *PocketTTS) pumpAudio(out io.Writer) error {
-	pipeClosed := false
-	var daemonErr error
-	for {
-		msg, payload, err := readMessage(p.stdout)
-		if err != nil {
-			return fmt.Errorf("reading from daemon: %w", err)
-		}
-
-		switch msg.Type {
-		case "audio":
-			if pipeClosed {
-				continue // le lecteur est mort (annulation) : on jette et on draine
-			}
-			if _, err := out.Write(payload); err != nil {
-				pipeClosed = true // lecteur tué : normal après un skip/stop
-			}
-		case "end":
-			// Une annulation demandée passe par ctx, pas par une erreur : le
-			// skip et le stop sont des issues normales.
-			if msg.Cancelled {
-				return nil
-			}
-			return daemonErr
-		case "error":
-			log.Printf("daemon: %s", msg.Message)
-			daemonErr = errors.New(msg.Message)
-		}
-	}
-}
-
-func (p *PocketTTS) send(cmd map[string]string) error {
-	payload, err := json.Marshal(cmd)
-	if err != nil {
-		return err
-	}
-	if _, err := p.stdin.Write(append(payload, '\n')); err != nil {
-		return fmt.Errorf("writing to daemon: %w", err)
-	}
-	return nil
+	return p.sampleRate, genErr
 }
 
 // SampleRate renvoie le taux du PCM produit. Il est connu dès le
@@ -367,11 +308,8 @@ func (p *PocketTTS) SampleRate() int { return p.sampleRate }
 // Voices renvoie le catalogue annoncé par le moteur au démarrage.
 func (p *PocketTTS) Voices() []string { return p.voices }
 
-// Close arrête le daemon.
-func (p *PocketTTS) Close() error {
-	_ = p.stdin.Close()
-	return p.cmd.Wait()
-}
+// Close libère la projection mémoire des poids.
+func (p *PocketTTS) Close() error { return p.engine.Close() }
 
 // playerArgs construit la ligne de commande ffplay pour lire du PCM brut
 // sur son entrée standard, avec un buffer minimal pour couper court à la latence.
