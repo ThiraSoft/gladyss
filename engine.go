@@ -211,6 +211,12 @@ func (p *PocketTTS) Speak(ctx context.Context, e Utterance) error {
 		return fmt.Errorf("starting audio player %q: %w", p.player, err)
 	}
 
+	// Le périphérique de sortie met du temps à s'ouvrir, et ce réveil avale le
+	// début de ce qu'on lui donne. On le fait donc porter sur du silence versé
+	// dès maintenant, plutôt que sur le premier mot.
+	primer := newPrimingWriter(playerStdin, p.sampleRate, speed)
+	primer.start()
+
 	// À l'annulation, le son doit cesser immédiatement : la génération s'arrête
 	// d'elle-même par le contexte, mais le lecteur a déjà de l'audio en réserve.
 	stopWatch := make(chan struct{})
@@ -233,9 +239,9 @@ func (p *PocketTTS) Speak(ctx context.Context, e Utterance) error {
 	// retient que l'avance strictement nécessaire.
 	var genErr error
 	if speed <= 1.0 {
-		genErr = p.generate(ctx, e, playerStdin)
+		genErr = p.generate(ctx, e, primer)
 	} else {
-		pacer := newPacedWriter(playerStdin, p.sampleRate, speed, e.Text, p.rate)
+		pacer := newPacedWriter(primer, p.sampleRate, speed, e.Text, p.rate)
 		genErr = p.generate(ctx, e, pacer)
 		if genErr == nil {
 			_ = pacer.Flush()
@@ -247,6 +253,7 @@ func (p *PocketTTS) Speak(ctx context.Context, e Utterance) error {
 
 	close(stopWatch)
 	<-watchDone
+	_ = primer.Close()
 	_ = playerStdin.Close()
 	_ = player.Wait() // attend la fin de la lecture : garantit la séquentialité
 
