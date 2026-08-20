@@ -644,20 +644,36 @@ Le modèle est `french_24l`, 24 kHz mono, dans les deux cas. Les colonnes disent
 surtout l'écart entre un accélérateur intégré et un CPU seul : la synthèse est
 le poste dominant, tout le reste en découle.
 
-| | Apple M3 (24 Go) | Core i7-9700K, CPU seul (32 Go) |
-|---|---|---|
-| Vitesse de synthèse | 2,7× le temps réel (RTF 0,37) | 1,19× le temps réel (RTF 0,84) |
-| Premier échantillon audio | ~200 ms après la requête | ~440 ms après la requête |
-| Réveil du moteur (modèle en cache disque) | ~4 s | **~20 ms** (projection mémoire ; ~19 s avec le daemon Python, dont ~15 s d'import de torch) |
-| Encodage d'un prompt de clonage de ~27 s | ~2,4 s | ~7 s |
-| Réaction à `/skip` et `/stop` | son coupé immédiatement, ~30 ms côté moteur | idem |
-| Longueur de prompt exploitable | jusqu'à ~70 s ; au-delà, énoncés tronqués | idem |
+Les deux premières colonnes datent du daemon Python ; la troisième est la même
+machine que la deuxième, après la migration vers `golem/pockettts`.
+
+| | M3, PyTorch | i7-9700K, PyTorch | i7-9700K, golem |
+|---|---|---|---|
+| Vitesse de synthèse | 2,7× le temps réel | 1,19× | **2,15 à 2,26×** |
+| Réveil du moteur (modèle en cache disque) | ~4 s | ~19 s, dont ~15 s d'import de torch | **~50 ms** (projection mémoire) |
+| Premier échantillon audio | ~200 ms après la requête | ~440 ms | ~210 ms côté moteur¹ |
+| Encodage d'un prompt de clonage de ~27 s | ~2,4 s | ~7 s | indisponible (cf. « Cloner une voix ») |
+| Réaction à `/skip` et `/stop` | son coupé immédiatement, ~30 ms côté moteur | idem | idem, ~80 ms (une frame) |
+| Longueur de prompt exploitable | jusqu'à ~70 s ; au-delà, énoncés tronqués | idem | idem |
+
+¹ Mesuré dans golem, pas à travers le service : à la vitesse par défaut de 1,1,
+le PCM de `/v1/audio/speech` traverse encore ffmpeg, qui tamponne — c'est ce que
+le chantier suivant retire.
+
+La vitesse de synthèse est mesurée sur trois rendus de la même phrase de six
+secondes, moteur déjà chaud :
+
+```bash
+curl -s -X POST 127.0.0.1:8420/v1/audio/speech -H 'Content-Type: application/json' \
+  -d '{"input":"Le chat dort sur le canapé du salon, tranquillement, pendant que la pluie tombe dehors sans discontinuer."}' -o /tmp/m.wav
+```
 
 Le débit de synthèse est ce qui décide de la latence à la lecture : dès qu'on
 demande une vitesse supérieure à lui, le lecteur consommerait l'audio plus vite
 qu'il n'arrive. C'est le régulateur de `pacing.go` qui arbitre, et il mesure ce
 débit à l'exécution plutôt que de le supposer — un `speed 1.1` passe en flux
-direct sur M3, et de justesse sur le i7.
+direct sur M3, et désormais aussi sur le i7, dont le débit est passé de 1,19× à
+2,2×.
 
 ## Limites connues
 
