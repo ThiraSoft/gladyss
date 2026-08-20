@@ -28,3 +28,6 @@ voix/
 .say.pid
 .gladyss.pid
 nohup.out
+
+# Les specs et plans de travail : utiles pendant, pas après.
+/docs/superpowers/
