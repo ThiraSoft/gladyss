@@ -7,8 +7,6 @@ set -e
 CONFIG_FILE=""
 if [ -f "$HOME/.config/gladyss/config.json" ]; then
   CONFIG_FILE="$HOME/.config/gladyss/config.json"
-elif [ -f "$HOME/.config/say/config.json" ]; then
-  CONFIG_FILE="$HOME/.config/say/config.json"
 fi
 
 CFG_URL=""
@@ -18,30 +16,40 @@ CFG_PITCH=""
 CFG_FX=""
 CFG_FORCE=""
 
+# cle lit une valeur du fichier de configuration. Six clés plates, chaînes ou
+# nombres : un sed ciblé suffit, là où un vrai analyseur JSON demanderait
+# l'interpréteur Python que ce projet ne veut plus. Une clé absente ou une
+# valeur biscornue rend une chaîne vide, et la valeur par défaut s'applique.
+cle() {
+  [ -n "$CONFIG_FILE" ] || return 0
+  sed -n \
+    -e 's/.*"'"$1"'"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+    -e 's/.*"'"$1"'"[[:space:]]*:[[:space:]]*\([0-9][0-9.]*\).*/\1/p' \
+    "$CONFIG_FILE" | head -1
+}
+
 if [ -n "$CONFIG_FILE" ]; then
-  eval "$(python3 -c "
-import json, sys
-try:
-    with open(sys.argv[1]) as f:
-        d = json.load(f)
-    if 'addr' in d: print(f'CFG_URL=\"http://{d[\"addr\"]}\"')
-    elif 'url' in d: print(f'CFG_URL=\"{d[\"url\"]}\"')
-    if 'speed' in d: print(f'CFG_SPEED=\"{d[\"speed\"]}\"')
-    if 'voice' in d: print(f'CFG_VOICE=\"{d[\"voice\"]}\"')
-    if 'pitch' in d: print(f'CFG_PITCH=\"{d[\"pitch\"]}\"')
-    if 'fx' in d: print(f'CFG_FX=\"{d[\"fx\"]}\"')
-    if 'force' in d: print(f'CFG_FORCE=\"{d[\"force\"]}\"')
-except Exception:
-    pass
-" "$CONFIG_FILE")"
+  CFG_URL=$(cle addr)
+  # addr est une adresse d'écoute, url une adresse complète : la première se
+  # préfixe, la seconde se prend telle quelle.
+  if [ -n "$CFG_URL" ]; then
+    CFG_URL="http://$CFG_URL"
+  else
+    CFG_URL=$(cle url)
+  fi
+  CFG_SPEED=$(cle speed)
+  CFG_VOICE=$(cle voice)
+  CFG_PITCH=$(cle pitch)
+  CFG_FX=$(cle fx)
+  CFG_FORCE=$(cle force)
 fi
 
-SERVICE_URL="${GLADYSS_URL:-${SAY_URL:-${CFG_URL:-http://127.0.0.1:8420}}}"
-SPEED="${GLADYSS_SPEED:-${SAY_SPEED:-${CFG_SPEED:-1.0}}}"
-VOICE="${GLADYSS_VOICE:-${SAY_VOICE:-${CFG_VOICE:-}}}"
-PITCH="${GLADYSS_PITCH:-${SAY_PITCH:-${CFG_PITCH:-}}}"
-FX="${GLADYSS_FX:-${SAY_FX:-${CFG_FX:-}}}"
-FORCE="${GLADYSS_FORCE:-${SAY_FORCE:-${CFG_FORCE:-}}}"
+SERVICE_URL="${GLADYSS_URL:-${CFG_URL:-http://127.0.0.1:8420}}"
+SPEED="${GLADYSS_SPEED:-${CFG_SPEED:-1.0}}"
+VOICE="${GLADYSS_VOICE:-${CFG_VOICE:-}}"
+PITCH="${GLADYSS_PITCH:-${CFG_PITCH:-}}"
+FX="${GLADYSS_FX:-${CFG_FX:-}}"
+FORCE="${GLADYSS_FORCE:-${CFG_FORCE:-}}"
 
 POSITIONAL=()
 while [[ $# -gt 0 ]]; do
@@ -70,7 +78,7 @@ Options:
       --effects       Liste les effets disponibles
 
 Variables d'environnement : GLADYSS_URL, GLADYSS_SPEED, GLADYSS_VOICE, GLADYSS_PITCH,
-GLADYSS_FX, GLADYSS_FORCE (ou préfixe legacy SAY_*) — mêmes valeurs que les options correspondantes.
+GLADYSS_FX, GLADYSS_FORCE — mêmes valeurs que les options correspondantes.
 USAGE
       exit 0 ;;
     --voices)  curl -s "$SERVICE_URL/voices"; echo; exit 0 ;;
@@ -96,26 +104,17 @@ if ! curl -s --max-time 1 "$SERVICE_URL/health" >/dev/null 2>&1; then
   exit 1
 fi
 
-# Un effet avec sa force demande un corps JSON ; le reste tient dans l'URL.
-if [ -n "$FORCE" ] && [ -n "$FX" ]; then
-  JSON_DATA=$(python3 -c "
-import json, sys
-data = {'text': sys.argv[1], 'effects': [{'name': sys.argv[3], 'force': float(sys.argv[4])}]}
-if sys.argv[2]: data['speed'] = float(sys.argv[2])
-if sys.argv[5]: data['voice'] = sys.argv[5]
-if sys.argv[6]: data['pitch'] = float(sys.argv[6])
-print(json.dumps(data))
-" "$TEXT" "$SPEED" "$FX" "$FORCE" "$VOICE" "$PITCH")
-  curl -s -X POST "$SERVICE_URL/say" -H 'Content-Type: application/json' -d "$JSON_DATA" >/dev/null
-else
-  PARAMS=()
-  [ -n "$SPEED" ] && PARAMS+=("speed=$SPEED")
-  [ -n "$VOICE" ] && PARAMS+=("voice=$VOICE")
-  [ -n "$PITCH" ] && PARAMS+=("pitch=$PITCH")
-  [ -n "$FX" ]    && PARAMS+=("fx=$FX")
-  QUERY=""
-  if [ ${#PARAMS[@]} -gt 0 ]; then
-    QUERY="?"$(IFS='&'; echo "${PARAMS[*]}")
-  fi
-  curl -s -X POST "$SERVICE_URL/say$QUERY" -d "$TEXT" >/dev/null
+# Tout passe par l'URL, y compris la force de l'effet : le service accepte
+# ?force=, et le texte voyage dans le corps, où il n'a rien à échapper. Plus de
+# JSON à fabriquer, donc plus d'interpréteur à invoquer pour ça.
+PARAMS=()
+[ -n "$SPEED" ] && PARAMS+=("speed=$SPEED")
+[ -n "$VOICE" ] && PARAMS+=("voice=$VOICE")
+[ -n "$PITCH" ] && PARAMS+=("pitch=$PITCH")
+[ -n "$FX" ]    && PARAMS+=("fx=$FX")
+[ -n "$FX" ] && [ -n "$FORCE" ] && PARAMS+=("force=$FORCE")
+QUERY=""
+if [ ${#PARAMS[@]} -gt 0 ]; then
+  QUERY="?"$(IFS='&'; echo "${PARAMS[*]}")
 fi
+curl -s -X POST "$SERVICE_URL/say$QUERY" -d "$TEXT" >/dev/null
