@@ -17,25 +17,39 @@ aucune clé d'API, aucun quota, et aucun Python.
 ```
 
 `install.sh` vérifie les dépendances système, construit le binaire, installe le
-client `gladyss` (et son alias `say`) dans `~/.local/bin`, puis prononce une
-phrase pour vérifier que la chaîne audio marche de bout en bout. Il est
-idempotent : on le relance après un `git pull`. `--no-cli` saute l'installation
-du client, `--no-check` la vérification finale, `--bin-dir` change la
-destination du client.
+client `gladyss` dans `~/.local/bin`, télécharge les poids
+du modèle s'ils manquent, puis prononce une phrase pour vérifier que la chaîne
+audio marche de bout en bout. Il est idempotent : on le relance après un
+`git pull`. `--no-cli` saute l'installation du client, `--no-check` la
+vérification finale, `--no-model` le téléchargement des poids, `--yes` la
+confirmation qu'il demande avant, `--bin-dir` change la destination du client.
 
 À la main, si tu préfères :
 
 ```bash
-go build -o gladyss . && ./gladyss
+go build -trimpath -ldflags="-s -w" -o gladyss . && ./gladyss
 ```
+
+C'est le build que fait `install.sh` : sans symboles ni chemins de compilation,
+6,9 Mo au lieu de 10,2. Un `go build -o gladyss .` nu convient pour déboguer ou
+profiler.
 
 C'est tout : l'inférence est en Go, par le paquet `pockettts` de
 [golem](https://github.com/ThiraSoft/golem). Pas de Python, pas de PyTorch, pas
 d'environnement virtuel — le binaire et les poids suffisent.
 
-Le service écoute sur `127.0.0.1:8420`. Les poids du modèle (~1 Go) sont
-attendus dans le cache HuggingFace, là où l'outillage de Kyutai les dépose ;
-gladyss les projette en mémoire, ce qui prend quelques millisecondes.
+Le service écoute sur `127.0.0.1:8420`. Les poids du modèle (641 Mo, plus les
+26 voix du catalogue) sont attendus dans le cache HuggingFace, là où l'outillage
+de Kyutai les dépose ; gladyss les projette en mémoire, ce qui prend quelques
+millisecondes. Le service ne les télécharge jamais lui-même : c'est `install.sh`
+qui les y met, par `curl`, depuis le dépôt public
+[`kyutai/pocket-tts-without-voice-cloning`](https://huggingface.co/kyutai/pocket-tts-without-voice-cloning)
+— pas de jeton, pas de conditions à accepter, et surtout pas de client `hf`, qui
+ramènerait le Python dont ce projet se passe. À la main :
+
+```bash
+./install.sh --no-cli --no-check    # les poids, rien d'autre
+```
 
 `ffplay` et `ffmpeg` doivent être installés (`brew install ffmpeg` sur macOS,
 le paquet `ffmpeg` de ta distribution sur Linux) : le premier joue le son, le
@@ -53,22 +67,32 @@ gladyss -v alba -s 1.3 "Plus vite, autre voix"
 gladyss --stop
 ```
 
-*(L'ancien alias de commande `say` reste également disponible).*
-
 `gladyss --help` liste les options, `gladyss --voices` le catalogue. Le service doit
 tourner : le client ne le démarre pas, il le dit s'il ne répond pas.
+
+### Désinstaller
+
+```bash
+./uninstall.sh
+```
+
+Retire le client du `PATH` et le binaire construit. Pour le reste — les poids du
+modèle, les voix clonées, la configuration — il demande, une question par
+catégorie, la réponse par défaut étant de garder. `--yes` répond oui à tout,
+`--bin-dir` dit où le client avait été installé. Les poids de clonage, que
+`install.sh` n'a jamais téléchargés, sont signalés et laissés en place.
 
 Chaque option a une variable d'environnement équivalente, pour fixer ses
 préférences une fois pour toutes plutôt que de les répéter à chaque appel :
 
 | Variable | Option | Défaut |
 |---|---|---|
-| `GLADYSS_URL` (ou `SAY_URL`) | — | `http://127.0.0.1:8420` |
-| `GLADYSS_SPEED` (ou `SAY_SPEED`) | `-s`, `--speed` | `1.0` |
-| `GLADYSS_VOICE` (ou `SAY_VOICE`) | `-v`, `--voice` | celle du service |
-| `GLADYSS_PITCH` (ou `SAY_PITCH`) | `-p`, `--pitch` | celle du service |
-| `GLADYSS_FX` (ou `SAY_FX`) | `--fx` | aucun effet |
-| `GLADYSS_FORCE` (ou `SAY_FORCE`) | `--force` | intensité nominale |
+| `GLADYSS_URL` | — | `http://127.0.0.1:8420` |
+| `GLADYSS_SPEED` | `-s`, `--speed` | `1.0` |
+| `GLADYSS_VOICE` | `-v`, `--voice` | celle du service |
+| `GLADYSS_PITCH` | `-p`, `--pitch` | celle du service |
+| `GLADYSS_FX` | `--fx` | aucun effet |
+| `GLADYSS_FORCE` | `--force` | intensité nominale |
 
 L'option l'emporte sur la variable, qui l'emporte sur le défaut. Une élocution
 un peu plus vive, par exemple, tient dans une ligne du fichier de profil :
@@ -139,7 +163,13 @@ curl -X POST localhost:8420/say -H 'Content-Type: application/json' -d '{
 }'
 
 curl -X POST "localhost:8420/say?text=Bonjour&fx=robot,vibrato"   # raccourci, force nominale
+curl -X POST "localhost:8420/say?text=Bonjour&fx=echo&force=0.45" -d ""  # une force pour tous
 ```
+
+`?force=` donne la même force à tous les effets de `?fx=`. Une force par effet
+demande le corps JSON — mais la ligne de commande n'en a jamais besoin, et c'est
+ce qui permet au client `gladyss` de tout faire passer par l'URL, sans avoir à
+fabriquer du JSON.
 
 Contrôle :
 
@@ -225,7 +255,7 @@ Nova, pas ici.
 Le service résout sa configuration dans l'ordre suivant :
 1. **Drapeaux CLI** (`-voice`, `-speed`, `-addr`, etc.)
 2. **Variables d'environnement** (`GLADYSS_DEFAULT_VOICE`, `GLADYSS_SPEED`, `GLADYSS_ADDR`, etc.)
-3. **Fichier de configuration utilisateur** : `~/.config/gladyss/config.json` (ou `~/.config/say/config.json`)
+3. **Fichier de configuration utilisateur** : `~/.config/gladyss/config.json`
 4. **Valeurs par défaut intégrées**
 
 Exemple de fichier `~/.config/gladyss/config.json` :
@@ -257,10 +287,13 @@ Kyutai publie 26 voix officielles : `alba`, `anna`, `azelma`, `bill_boerst`,
 `marius`, `mary`, `michael`, `paul`, `peter_yearsley`, `rafael`, `stuart_bell`,
 `vera`.
 
-**Celles qui sont disponibles sont celles déjà présentes dans le cache
-HuggingFace.** gladyss ne télécharge rien : il lit ce qui est là. C'est la
-contrepartie de la disparition de Python, dont la bibliothèque allait chercher
-une voix manquante toute seule. Pour en ajouter une, la récupérer depuis
+`install.sh` les télécharge toutes les 26 en même temps que le modèle, donc
+elles sont là après une installation normale.
+
+**Passé cette étape, gladyss ne télécharge rien : il lit ce qui est dans le
+cache HuggingFace.** C'est la contrepartie de la disparition de Python, dont la
+bibliothèque allait chercher une voix manquante toute seule. Pour en ajouter une
+d'ailleurs — une autre langue, un autre dépôt — la récupérer depuis
 `kyutai/pocket-tts-without-voice-cloning` — elle y est publiée déjà encodée, un
 `.safetensors` par voix sous `languages/french_24l/embeddings/` — ou déposer le
 fichier directement dans `voix/`.
@@ -498,8 +531,9 @@ POST /v1/audio/speech ───────────────────�
         (rendu au client, hors file)                      (filtres)
 ```
 
-Autour du service, deux fichiers d'outillage : `install.sh` construit le binaire,
-`cli/say` est le client en ligne de commande.
+Autour du service, trois fichiers d'outillage : `install.sh` construit le
+binaire et va chercher les poids, `uninstall.sh` défait tout ça, et
+`cli/gladyss` est le client en ligne de commande.
 
 Le service lui-même tient en cinq pièces, chacune testable seule :
 
@@ -705,9 +739,10 @@ direct sur M3, et désormais aussi sur le i7, dont le débit est passé de 1,19�
   service : demander `pcm` pour un flux propre.
 - **Licence du modèle** : code MIT, poids CC-BY-4.0 — usage commercial autorisé
   avec attribution à Kyutai.
-- **Aucune voix n'est téléchargée automatiquement.** Le service lit le cache
-  HuggingFace, il ne le remplit pas. Cf. « Les voix ». Le clonage, lui, ne
-  demande rien d'autre que les poids déjà là.
+- **Le service ne télécharge rien.** Il lit le cache HuggingFace, il ne le
+  remplit pas : c'est `install.sh` qui s'en charge, une fois, pour le catalogue.
+  Une voix d'un autre dépôt ou d'une autre langue s'y ajoute à la main. Cf.
+  « Les voix ».
 - **Pas d'authentification, pas de limite de débit.** Écoute sur la boucle locale
   uniquement. Ne pas exposer tel quel sur un réseau.
 - **Un énoncé d'un seul mot peut sortir tronqué**, environ un rendu sur six. Le

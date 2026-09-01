@@ -1,14 +1,16 @@
 # Environnement Python et artefacts de build
 .venv/
 __pycache__/
-# Le binaire construit, à la racine seulement : cli/gladyss et cli/say sont des fichiers du dépôt.
-/say
+# Le binaire construit, à la racine seulement : cli/gladyss est un fichier du dépôt.
 /gladyss
 /.install-check.log
 
 # Voix clonées : échantillons et états de modèle. Ce sont des enregistrements
-# de personnes réelles, ils n'ont rien à faire dans un dépôt public.
-voix/
+# de personnes réelles, ils n'ont rien à faire dans un dépôt public. Le contenu
+# est ignoré, pas le répertoire : .gitkeep le fait exister à la sortie du clone,
+# là où le service ira chercher les voix locales.
+voix/*
+!voix/.gitkeep
 *.wav
 *.safetensors
 
@@ -25,7 +27,6 @@ voix/
 
 # Journaux et PID d'exécutions manuelles
 *.log
-.say.pid
 .gladyss.pid
 nohup.out
 
