@@ -194,6 +194,20 @@ func extractUtterance(r *http.Request) (text, voice string, speed, pitch float64
 		}
 	}
 
+	// ?force=0.6 donne cette force à tous les effets de ?fx=. Une force par
+	// effet reste possible, mais par le corps JSON : la ligne de commande n'en
+	// demande jamais tant. Sans ?fx=, le paramètre ne s'applique à rien et est
+	// ignoré plutôt que refusé — c'est une valeur par défaut, pas un ordre.
+	if raw := strings.TrimSpace(r.URL.Query().Get("force")); raw != "" {
+		force, ferr := strconv.ParseFloat(raw, 64)
+		if ferr != nil {
+			return "", voice, speed, pitch, effects, textError(fmt.Sprintf("unreadable force: %q", raw))
+		}
+		for i := range effects {
+			effects[i].Force = force
+		}
+	}
+
 	if raw := r.URL.Query().Get("text"); strings.TrimSpace(raw) != "" {
 		return strings.TrimSpace(raw), voice, speed, pitch, effects, nil
 	}

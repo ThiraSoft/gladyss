@@ -363,6 +363,42 @@ func TestSayAccepteLeRaccourciFx(t *testing.T) {
 	}
 }
 
+func TestSayAccepteLaForceEnParametre(t *testing.T) {
+	h, sp, _ := serveurDeTest(t, 50*time.Millisecond)
+
+	rec := appel(t, h, http.MethodGet, "/say?text=vite&fx=echo&force=0.45", "")
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("code = %d, want %d — corps: %s", rec.Code, http.StatusAccepted, rec.Body)
+	}
+	sp.attendDemarrage(t)
+
+	effets := sp.effetsDemandes()
+	if len(effets) != 1 || len(effets[0]) != 1 {
+		t.Fatalf("effets transmis = %v, want un effet", effets)
+	}
+	if effets[0][0].Force != 0.45 {
+		t.Errorf("force = %v, want 0.45", effets[0][0].Force)
+	}
+}
+
+func TestSayRefuseUneForceIllisible(t *testing.T) {
+	h, _, _ := serveurDeTest(t, 50*time.Millisecond)
+
+	rec := appel(t, h, http.MethodGet, "/say?text=x&fx=echo&force=beaucoup", "")
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("code = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
+func TestSayRefuseUneForceHorsBornesEnParametre(t *testing.T) {
+	h, _, _ := serveurDeTest(t, 50*time.Millisecond)
+
+	rec := appel(t, h, http.MethodGet, "/say?text=x&fx=echo&force=9", "")
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("code = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
 func TestSayRefuseUnEffetInconnu(t *testing.T) {
 	h, _, _ := serveurDeTest(t, 50*time.Millisecond)
 
