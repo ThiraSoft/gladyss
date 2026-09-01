@@ -4,3 +4,7 @@ github.com/ThiraSoft/golem v0.2.1 h1:oWIehc6eT5YRs46g3fh8kE3x3llCLZQrzWp6UdHyEuI
 github.com/ThiraSoft/golem v0.2.1/go.mod h1:UCc5Y7OebvJmtjEDUFojxgPw0RKs8ey50dV4SB+Dx74=
 github.com/ThiraSoft/golem v0.3.0 h1:wDYZODMKwSjBQ9NdobJvdHuqk7W+P6xVDvtiIW1UuJI=
 github.com/ThiraSoft/golem v0.3.0/go.mod h1:UCc5Y7OebvJmtjEDUFojxgPw0RKs8ey50dV4SB+Dx74=
+github.com/ThiraSoft/golem v0.6.0 h1:IfVp/pBP52S39sIuH4HU0aIo8Mk2PI/F/RGuRte1e84=
+github.com/ThiraSoft/golem v0.6.0/go.mod h1:UCc5Y7OebvJmtjEDUFojxgPw0RKs8ey50dV4SB+Dx74=
+github.com/ThiraSoft/golem v0.20.1 h1:v2LVo38mvUNBcNLDofwqBOHxsdCFzwSf5rU//K8xloo=
+github.com/ThiraSoft/golem v0.20.1/go.mod h1:CifnSTvaOm/vddl2QyivyAC3EYFuBZw5nDwXHy253EU=
