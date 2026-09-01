@@ -28,8 +28,8 @@ import (
 // réelle. Au-delà, le modèle rallonge au contraire ses énoncés. Cf. README.
 const defaultEOSThreshold = 0.0
 
-// userConfig porte la configuration optionnelle définie dans ~/.config/gladyss/config.json
-// ou ~/.config/say/config.json.
+// userConfig porte la configuration optionnelle définie dans
+// ~/.config/gladyss/config.json.
 type userConfig struct {
 	Addr         string   `json:"addr"`
 	Voice        string   `json:"voice"`
@@ -46,17 +46,11 @@ func loadUserConfig() userConfig {
 	if err != nil {
 		return userConfig{}
 	}
-	candidates := []string{
-		filepath.Join(home, ".config", "gladyss", "config.json"),
-		filepath.Join(home, ".config", "say", "config.json"),
-	}
-	for _, p := range candidates {
-		data, err := os.ReadFile(p)
-		if err == nil {
-			var cfg userConfig
-			if err := json.Unmarshal(data, &cfg); err == nil {
-				return cfg
-			}
+	p := filepath.Join(home, ".config", "gladyss", "config.json")
+	if data, err := os.ReadFile(p); err == nil {
+		var cfg userConfig
+		if err := json.Unmarshal(data, &cfg); err == nil {
+			return cfg
 		}
 	}
 	return userConfig{}
@@ -71,8 +65,6 @@ func main() {
 	}
 	if v := os.Getenv("GLADYSS_ADDR"); v != "" {
 		defAddr = v
-	} else if v := os.Getenv("SAY_ADDR"); v != "" {
-		defAddr = v
 	}
 
 	defVoice := "estelle"
@@ -81,11 +73,7 @@ func main() {
 	}
 	if v := os.Getenv("GLADYSS_DEFAULT_VOICE"); v != "" {
 		defVoice = v
-	} else if v := os.Getenv("SAY_DEFAULT_VOICE"); v != "" {
-		defVoice = v
 	} else if v := os.Getenv("GLADYSS_VOICE"); v != "" {
-		defVoice = v
-	} else if v := os.Getenv("SAY_VOICE"); v != "" {
 		defVoice = v
 	}
 
@@ -94,10 +82,6 @@ func main() {
 		defSpeed = *cfg.Speed
 	}
 	if v := os.Getenv("GLADYSS_SPEED"); v != "" {
-		if f, err := strconv.ParseFloat(v, 64); err == nil {
-			defSpeed = f
-		}
-	} else if v := os.Getenv("SAY_SPEED"); v != "" {
 		if f, err := strconv.ParseFloat(v, 64); err == nil {
 			defSpeed = f
 		}
@@ -111,10 +95,6 @@ func main() {
 		if f, err := strconv.ParseFloat(v, 64); err == nil {
 			defPitch = f
 		}
-	} else if v := os.Getenv("SAY_PITCH"); v != "" {
-		if f, err := strconv.ParseFloat(v, 64); err == nil {
-			defPitch = f
-		}
 	}
 
 	defEOS := defaultEOSThreshold
@@ -122,10 +102,6 @@ func main() {
 		defEOS = *cfg.EOSThreshold
 	}
 	if v := os.Getenv("GLADYSS_EOS_THRESHOLD"); v != "" {
-		if f, err := strconv.ParseFloat(v, 64); err == nil {
-			defEOS = f
-		}
-	} else if v := os.Getenv("SAY_EOS_THRESHOLD"); v != "" {
 		if f, err := strconv.ParseFloat(v, 64); err == nil {
 			defEOS = f
 		}
