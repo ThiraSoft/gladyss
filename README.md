@@ -519,6 +519,33 @@ réglages sur un seul rendu chacun ne prouve rien sur le débit.** Le timbre et
 l'intelligibilité, eux, ne bougent pas. Un débit stable se réglerait sur
 `Settings.Temperature`, pas sur `speed`.
 
+### Fusionner deux voix
+
+Une voix clonée n'est pas un vecteur de locuteur : c'est l'état du transformer
+après l'écoute du prompt, les clés et valeurs d'attention de chaque trame de
+80 ms, sur 24 couches. `cmd/fusion` travaille directement sur ces
+`.safetensors`, sans repasser par l'audio, donc aussi sur les voix du catalogue
+Kyutai dont on n'a pas l'enregistrement.
+
+```bash
+go run ./cmd/fusion -a voix/gladyss.safetensors \
+  -b ~/.cache/huggingface/hub/models--kyutai--pocket-tts/snapshots/*/languages/french_24l/embeddings/mary.safetensors \
+  -na 245 -nb 105 -o voix/gladyss_mary.safetensors
+```
+
+- **`concat`** (défaut) : A puis B, comme si le modèle avait écouté les deux
+  extraits à la suite. Les clés de B sont tournées du décalage, ce qui les place
+  exactement à leur nouvelle position RoPE. Le dosage se règle en trames
+  gardées (`-na`, `-nb`, 12,5 par seconde) : 245 + 105, c'est 70/30 sur 28 s.
+  La voix fusionnée doit tenir sous 700 positions, le reste de la capacité
+  servant à la génération.
+- **`interp`** (`-alpha 0.5`) : moyenne position par position. Les positions
+  concordent, pas le contenu : on moyenne des syllabes sans rapport, et le
+  modèle se met plutôt à chanter. Amusant, pas utilisable.
+
+Essayé sur GLaDOS : un montage Portal 1 + Portal 2 en concat, puis gladyss +
+mary à 50/50 et 70/30. Toutes tiennent la route, aucune n'a battu `gladyss`.
+
 ## Architecture
 
 ```
@@ -531,9 +558,10 @@ POST /v1/audio/speech ───────────────────�
         (rendu au client, hors file)                      (filtres)
 ```
 
-Autour du service, trois fichiers d'outillage : `install.sh` construit le
-binaire et va chercher les poids, `uninstall.sh` défait tout ça, et
-`cli/gladyss` est le client en ligne de commande.
+Autour du service, l'outillage : `install.sh` construit le binaire et va
+chercher les poids, `uninstall.sh` défait tout ça, `cli/gladyss` est le client
+en ligne de commande, `preparer_voix.sh` monte un prompt de clonage et
+`cmd/fusion` mélange deux voix clonées.
 
 Le service lui-même tient en cinq pièces, chacune testable seule :
 
