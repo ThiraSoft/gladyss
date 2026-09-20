@@ -64,6 +64,7 @@ second applique les filtres pour l'audio rendu par `/v1/audio/speech`.
 gladyss "Bonjour"
 echo "depuis un pipeline" | gladyss
 gladyss -v alba -s 1.3 "Plus vite, autre voix"
+mon-modele --stream | gladyss --stream   # parle sans attendre la fin du texte
 gladyss --stop
 ```
 
@@ -113,6 +114,7 @@ se pose pas : le flux part dès le premier morceau.
 | Route | Effet |
 |---|---|
 | `POST /say` | Met le texte en file. Répond `202` avec sa position d'attente. |
+| `POST /say/stream` | Même chose, mais le corps arrive au fil de l'eau : chaque phrase part dès qu'elle est finie. |
 | `POST /v1/audio/speech` | Synthétise et **renvoie l'audio** au client, sans le jouer. Compatible OpenAI. |
 | `POST /skip` | Interrompt l'énoncé en cours et enchaîne sur le suivant. |
 | `POST /stop` | Interrompt l'énoncé en cours **et vide la file**. |
@@ -178,6 +180,54 @@ curl -X POST localhost:8420/skip
 curl -X POST localhost:8420/stop
 curl localhost:8420/queue
 ```
+
+### Parler pendant que le texte s'écrit : `/say/stream`
+
+`/say` attend le point final : tant que le texte n'est pas entier, rien n'est
+dit. `/say/stream` prend le même texte en morceaux et met chaque phrase en file
+dès qu'elle est terminée. Un modèle qui répond en 20 s commence donc à être
+entendu au bout de la première phrase.
+
+```bash
+mon-modele --stream | curl -s -T - -X POST "localhost:8420/say/stream"
+```
+
+ou, depuis le client en ligne de commande :
+
+```bash
+mon-modele --stream | gladyss --stream
+```
+
+`-T -` est ce qui compte : curl envoie alors le corps en morceaux, au fur et à
+mesure qu'il le lit. `--data-binary` attendrait la fin de l'entrée pour en
+connaître la taille, ce qui annulerait tout l'intérêt.
+
+Les réglages passent en paramètres de requête (`?voice=`, `?speed=`, `?pitch=`,
+`?fx=`, `?force=`) et valent pour tout le flux : le corps est pris pour du
+texte, il n'y a plus de place pour du JSON. Ils sont validés avant le premier
+mot, donc une voix inconnue est refusée tout de suite plutôt qu'au milieu du
+tour. La réponse arrive à la fermeture du corps : `{"enqueued":N,"position":P,
+"voice":"…"}`.
+
+Le découpage vit dans le paquet `oral/` :
+
+- il coupe à la fin de chaque phrase **et** de chaque ligne, sans se laisser
+  prendre par « 3.5 » ou par des points de suspension en cours d'écriture ;
+- il laisse les blocs de code entiers de côté : ce qui est entre trois barres
+  s'écrit, mais ne se prononce pas. La bascule se fait sur la ligne complète,
+  puisque les trois barres arrivent souvent coupées en deux morceaux ;
+- il écarte ce qui ne se dit pas (chemins, commandes, URL, listes, tableaux)
+  et nettoie le markdown décoratif. `?filter=off` désactive ce tri et laisse
+  passer le texte entier ;
+- il retient les énoncés de moins de 60 caractères et les émet groupés : en
+  dessous, le modèle tronque (voir *Les phrases courtes et le seuil de fin de
+  parole*).
+
+Mesuré contre le service : première phrase en file **30 ms** après le premier
+morceau reçu, alors que le corps de la requête est resté ouvert 4 s de plus.
+
+Nova et Avatar importent ce même paquet plutôt que de refaire ce découpage
+chacun de leur côté.
 
 ### Synthèse sans lecture — `/v1/audio/speech`
 
@@ -549,7 +599,8 @@ mary à 50/50 et 70/30. Toutes tiennent la route, aucune n'a battu `gladyss`.
 ## Architecture
 
 ```
-POST /say ──▶ Controller (file séquentielle) ──▶ PocketTTS ──▶ ffplay
+POST /say ─────────▶ Controller (file séquentielle) ──▶ PocketTTS ──▶ ffplay
+POST /say/stream ──▶ oral (découpe le flux) ──┘
                    │                                 │
                 /skip /stop                golem/pockettts
               (annule le contexte)      (dans ce processus)
@@ -574,6 +625,11 @@ Le service lui-même tient en cinq pièces, chacune testable seule :
   aussitôt, soit dans `ffplay` (lecture), soit dans `ffmpeg` puis dans un
   tampon (`SynthesizeTo`, pour la route compatible OpenAI). Les deux chemins
   partagent la même chaîne de filtres : à réglages égaux, ils sonnent pareil.
+- **`oral/`** : la moitié texte du streaming, elle transforme un texte qui
+  elle transforme un texte qui arrive au fil de l'eau en énoncés prononçables
+  (coupe à la phrase, écarte les blocs de code et ce qui ne se dit pas, regroupe
+  ce qui est trop court). Un paquet à part, sans dépendance, importé aussi par
+  Nova et Avatar.
 - **`voices.go`** — la résolution des noms de voix. `voix/` d'abord, puis le
   catalogue Kyutai du cache HuggingFace.
 - **`pacing.go`** — le régulateur de lecture. Le daemon génère à environ 1,2 ×

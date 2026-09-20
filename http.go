@@ -126,6 +126,7 @@ func newServer(c *Controller, synth Synthesizer, defaultVoice string, knownVoice
 	}
 	mux.HandleFunc("/say", handleSay)
 	mux.HandleFunc("/gladyss", handleSay)
+	mux.HandleFunc("/say/stream", sayStream(c, s))
 
 	// Synthèse compatible OpenAI : rend l'audio au client au lieu de le jouer.
 	mux.HandleFunc("/v1/audio/speech", speech(synth, s))
@@ -166,22 +167,23 @@ func newServer(c *Controller, synth Synthesizer, defaultVoice string, knownVoice
 	return mux
 }
 
-// extractUtterance accepte le texte et la voix sous trois formes, de la plus
-// pratique en curl à la plus structurée : paramètres de requête, corps brut,
-// ou corps JSON {"text":"…","voice":"…"}.
-func extractUtterance(r *http.Request) (text, voice string, speed, pitch float64, effects []Effect, err error) {
+// extractOptions lit les réglages portés par les paramètres de requête. Ils
+// sont les mêmes pour /say et pour /say/stream, où ils valent pour tout le
+// flux : c'est la seule forme qu'un corps versé au fil de l'eau laisse encore
+// disponible.
+func extractOptions(r *http.Request) (voice string, speed, pitch float64, effects []Effect, err error) {
 	voice = strings.TrimSpace(r.URL.Query().Get("voice"))
 
 	if raw := strings.TrimSpace(r.URL.Query().Get("speed")); raw != "" {
 		speed, err = strconv.ParseFloat(raw, 64)
 		if err != nil {
-			return "", voice, 0, 0, nil, textError(fmt.Sprintf("unreadable speed: %q", raw))
+			return voice, 0, 0, nil, textError(fmt.Sprintf("unreadable speed: %q", raw))
 		}
 	}
 	if raw := strings.TrimSpace(r.URL.Query().Get("pitch")); raw != "" {
 		pitch, err = strconv.ParseFloat(raw, 64)
 		if err != nil {
-			return "", voice, speed, 0, nil, textError(fmt.Sprintf("unreadable pitch: %q", raw))
+			return voice, speed, 0, nil, textError(fmt.Sprintf("unreadable pitch: %q", raw))
 		}
 	}
 
@@ -201,11 +203,22 @@ func extractUtterance(r *http.Request) (text, voice string, speed, pitch float64
 	if raw := strings.TrimSpace(r.URL.Query().Get("force")); raw != "" {
 		force, ferr := strconv.ParseFloat(raw, 64)
 		if ferr != nil {
-			return "", voice, speed, pitch, effects, textError(fmt.Sprintf("unreadable force: %q", raw))
+			return voice, speed, pitch, effects, textError(fmt.Sprintf("unreadable force: %q", raw))
 		}
 		for i := range effects {
 			effects[i].Force = force
 		}
+	}
+	return voice, speed, pitch, effects, nil
+}
+
+// extractUtterance accepte le texte et la voix sous trois formes, de la plus
+// pratique en curl à la plus structurée : paramètres de requête, corps brut,
+// ou corps JSON {"text":"…","voice":"…"}.
+func extractUtterance(r *http.Request) (text, voice string, speed, pitch float64, effects []Effect, err error) {
+	voice, speed, pitch, effects, err = extractOptions(r)
+	if err != nil {
+		return "", voice, speed, pitch, effects, err
 	}
 
 	if raw := r.URL.Query().Get("text"); strings.TrimSpace(raw) != "" {

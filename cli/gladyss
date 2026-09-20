@@ -50,6 +50,8 @@ VOICE="${GLADYSS_VOICE:-${CFG_VOICE:-}}"
 PITCH="${GLADYSS_PITCH:-${CFG_PITCH:-}}"
 FX="${GLADYSS_FX:-${CFG_FX:-}}"
 FORCE="${GLADYSS_FORCE:-${CFG_FORCE:-}}"
+STREAM=""
+RAW=""
 
 POSITIONAL=()
 while [[ $# -gt 0 ]]; do
@@ -59,12 +61,15 @@ while [[ $# -gt 0 ]]; do
     --pitch|-p) PITCH="$2"; shift 2 ;;
     --fx)       FX="$2"; shift 2 ;;
     --force)    FORCE="$2"; shift 2 ;;
+    --stream)   STREAM=1; shift ;;
+    --raw)      RAW=1; shift ;;
     --stop)     curl -s -X POST "$SERVICE_URL/stop" >/dev/null; exit 0 ;;
     --skip)     curl -s -X POST "$SERVICE_URL/skip" >/dev/null; exit 0 ;;
     --help|-h)
       cat <<'USAGE'
 Usage: gladyss [options] <message...>
        echo "message" | gladyss
+       mon-modele | gladyss --stream
 
 Options:
   -s, --speed <val>   Vitesse de parole (défaut: 1.0, ou $GLADYSS_SPEED)
@@ -72,6 +77,9 @@ Options:
   -p, --pitch <val>   Hauteur de voix (0.5 à 2.0)
       --fx <nom>      Effet sonore (gladyss --effects pour la liste)
       --force <val>   Force de l'effet (0.0 à 2.0)
+      --stream        Lit l'entrée standard au fil de l'eau : chaque phrase
+                      part dès qu'elle est finie, sans attendre la fin du texte
+      --raw           Avec --stream, dit tout, sans écarter code ni chemins
       --stop          Interrompt la lecture et vide la file
       --skip          Passe à l'énoncé suivant
       --voices        Liste les voix disponibles
@@ -87,7 +95,10 @@ USAGE
   esac
 done
 
-if [ ${#POSITIONAL[@]} -gt 0 ]; then
+if [ -n "$STREAM" ]; then
+  # Le texte n'est pas lu ici : il est versé à curl au fur et à mesure.
+  TEXT=""
+elif [ ${#POSITIONAL[@]} -gt 0 ]; then
   TEXT="${POSITIONAL[*]}"
 elif [ ! -t 0 ]; then
   TEXT=$(cat)
@@ -113,8 +124,16 @@ PARAMS=()
 [ -n "$PITCH" ] && PARAMS+=("pitch=$PITCH")
 [ -n "$FX" ]    && PARAMS+=("fx=$FX")
 [ -n "$FX" ] && [ -n "$FORCE" ] && PARAMS+=("force=$FORCE")
+[ -n "$RAW" ]   && PARAMS+=("filter=off")
 QUERY=""
 if [ ${#PARAMS[@]} -gt 0 ]; then
   QUERY="?"$(IFS='&'; echo "${PARAMS[*]}")
 fi
-curl -s -X POST "$SERVICE_URL/say$QUERY" -d "$TEXT" >/dev/null
+if [ -n "$STREAM" ]; then
+  # -T - envoie le corps en morceaux au fil de la lecture ; --data-binary
+  # attendrait la fin de l'entrée pour connaître sa taille, ce qui annulerait
+  # tout l'intérêt de la chose.
+  curl -s --no-buffer -X POST -T - "$SERVICE_URL/say/stream$QUERY" >/dev/null
+else
+  curl -s -X POST "$SERVICE_URL/say$QUERY" -d "$TEXT" >/dev/null
+fi
