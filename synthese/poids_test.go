@@ -194,3 +194,40 @@ func TestAssurerHorsLigneAvecCachePourvu(t *testing.T) {
 		t.Errorf("cache pourvu et réseau coupé : Assurer = %v, attendu nil", err)
 	}
 }
+
+// TestAssurerRendLAvancementDuLot : RecuLot ne recule jamais d'un fichier à
+// l'autre et finit sur TotalLot, connu dès la première progression. C'est ce
+// qui permet à un appelant de n'afficher qu'une barre, et de n'émettre qu'au
+// changement de pourcentage entier.
+func TestAssurerRendLAvancementDuLot(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	s := depotFactice(t, contenusDeTest)
+	hfBase = s.URL
+	t.Cleanup(func() { hfBase = "https://huggingface.co" })
+
+	var attendu int64
+	for _, c := range contenusDeTest {
+		attendu += int64(len(c))
+	}
+	var vus []Progression
+	if err := Assurer(context.Background(), func(p Progression) { vus = append(vus, p) }); err != nil {
+		t.Fatalf("Assurer: %v", err)
+	}
+	if len(vus) == 0 {
+		t.Fatal("aucune progression")
+	}
+	var avant int64
+	for _, p := range vus {
+		if p.TotalLot != attendu {
+			t.Fatalf("TotalLot = %d, attendu %d dès la première progression", p.TotalLot, attendu)
+		}
+		if p.RecuLot < avant {
+			t.Fatalf("RecuLot recule : %d après %d", p.RecuLot, avant)
+		}
+		avant = p.RecuLot
+	}
+	if avant != attendu {
+		t.Errorf("RecuLot final = %d, attendu %d", avant, attendu)
+	}
+}

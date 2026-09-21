@@ -37,6 +37,14 @@ type Progression struct {
 	Total   int64  // taille annoncée, 0 si inconnue
 	Index   int    // rang du fichier dans le lot, à partir de 1
 	Nombre  int    // nombre de fichiers du lot
+
+	// RecuLot et TotalLot portent l'avancement du lot entier, en octets :
+	// ce qui a été reçu depuis le début de cet appel, et la somme des
+	// tailles annoncées des fichiers à télécharger. Un appelant peut ainsi
+	// afficher une seule barre qui ne recule jamais, au lieu d'une par
+	// fichier. TotalLot vaut 0 si une taille au moins est inconnue.
+	RecuLot  int64
+	TotalLot int64
 }
 
 // cache rend le répertoire racine du cache Hugging Face pour le dépôt de
@@ -193,7 +201,10 @@ func copierAvecProgression(ctx context.Context, dst io.Writer, src io.Reader, av
 // Assurer garantit que les poids, le tokenizer et les voix du catalogue sont
 // dans le cache, en téléchargeant ce qui manque depuis le dépôt public de
 // Kyutai. progression est appelée au fil du transfert ; elle peut être nil.
-// Un cache déjà complet ne déclenche aucun appel réseau.
+// Même sur un cache complet, Assurer interroge l'API de Hugging Face pour
+// lister ce que le dépôt publie ; ce n'est qu'en cas de réponse impossible
+// qu'il se contente du cache (voir plus bas). Rien n'est téléchargé si rien ne
+// manque.
 func Assurer(ctx context.Context, progression func(Progression)) error {
 	lang, err := pockettts.LookupLanguage(pockettts.DefaultLanguage)
 	if err != nil {
@@ -253,6 +264,22 @@ func Assurer(ctx context.Context, progression func(Progression)) error {
 
 	snapshotDir := filepath.Join(racineCache, "snapshots", sha)
 
+	// Le total du lot est connu avant le premier octet : l'arbre du dépôt
+	// annonce la taille de chaque fichier. Une taille absente le rend
+	// inconnu, et TotalLot reste à 0 plutôt que de mentir.
+	var totalLot int64
+	for _, f := range manquants {
+		if dejaLa(filepath.Join(snapshotDir, filepath.FromSlash(f.Chemin))) {
+			continue
+		}
+		if f.Taille <= 0 {
+			totalLot = 0
+			break
+		}
+		totalLot += f.Taille
+	}
+
+	var acquis int64 // octets des fichiers du lot déjà reçus en entier
 	for i, f := range manquants {
 		cible := filepath.Join(snapshotDir, filepath.FromSlash(f.Chemin))
 		if dejaLa(cible) {
@@ -260,20 +287,25 @@ func Assurer(ctx context.Context, progression func(Progression)) error {
 		}
 		index := i + 1
 		nombre := len(manquants)
+		var dernier int64
 		err := recuperer(ctx, sha, f.Chemin, cible, f.Taille, func(recu int64) {
+			dernier = recu
 			if progression != nil {
 				progression(Progression{
-					Fichier: f.Chemin,
-					Recu:    recu,
-					Total:   f.Taille,
-					Index:   index,
-					Nombre:  nombre,
+					Fichier:  f.Chemin,
+					Recu:     recu,
+					Total:    f.Taille,
+					Index:    index,
+					Nombre:   nombre,
+					RecuLot:  acquis + recu,
+					TotalLot: totalLot,
 				})
 			}
 		})
 		if err != nil {
 			return err
 		}
+		acquis += dernier
 	}
 
 	// refs/main est ce que le cache Hugging Face garde pour savoir quelle
