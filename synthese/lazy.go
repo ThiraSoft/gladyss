@@ -12,10 +12,10 @@ import (
 // démarrage : les en-têtes HTTP peuvent en dépendre sans réveiller le moteur.
 const SampleRate = 24000
 
-// Differe démarre le daemon Python au premier énoncé plutôt qu'au
-// lancement du service, et le décharge après une période d'inactivité. Entre
-// deux réveils, aucun processus Python ni modèle en mémoire — juste ce
-// service HTTP, léger, qui attend.
+// Differe charge le moteur au premier énoncé plutôt qu'à l'ouverture, et le
+// décharge après une période d'inactivité. Entre deux réveils, aucun modèle
+// en mémoire : l'appelant (le service HTTP de gladyss, ou nova) reste léger
+// tant que personne ne parle.
 type Differe struct {
 	factory     func() (*Moteur, error)
 	idleTimeout time.Duration
@@ -48,7 +48,7 @@ func NouveauDiffere(factory func() (*Moteur, error), idleTimeout time.Duration) 
 
 // ensureStarted renvoie le moteur actif, en le démarrant si besoin. Le
 // verrou reste posé pendant tout le démarrage : deux demandes simultanées au
-// réveil ne doivent lancer le daemon qu'une fois.
+// réveil ne doivent charger le modèle qu'une fois.
 func (m *Differe) ensureStarted() (*Moteur, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -67,6 +67,15 @@ func (m *Differe) ensureStarted() (*Moteur, error) {
 	m.knownVoices = engine.Voices()
 	m.sampleRate = engine.SampleRate()
 	return engine, nil
+}
+
+// Demarrer charge le moteur tout de suite s'il ne tourne pas, sans rien
+// synthétiser. Un appelant qui veut savoir avant le premier énoncé si le
+// moteur s'ouvre (voix absente, fichier corrompu) s'en sert pour dire l'échec
+// au lieu de le découvrir en pleine phrase.
+func (m *Differe) Demarrer() error {
+	_, err := m.ensureStarted()
+	return err
 }
 
 func (m *Differe) Speak(ctx context.Context, e Enonce) error {
