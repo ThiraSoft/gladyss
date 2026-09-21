@@ -1,4 +1,4 @@
-module gladyss
+module github.com/ThiraSoft/gladyss
 
 go 1.23.2
 

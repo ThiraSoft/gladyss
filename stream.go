@@ -6,7 +6,7 @@ import (
 	"log"
 	"net/http"
 
-	"gladyss/oral"
+	"github.com/ThiraSoft/gladyss/oral"
 )
 
 // maxStreamSize borne un flux entier, là où maxTextSize borne un énoncé : un
