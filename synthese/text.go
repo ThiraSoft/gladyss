@@ -1,4 +1,4 @@
-package voix
+package synthese
 
 import (
 	"regexp"

@@ -13,21 +13,21 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ThiraSoft/gladyss/voix"
+	"github.com/ThiraSoft/gladyss/synthese"
 )
 
 // fakeSynth rend un PCM fixe et retient les énoncés reçus : la route est testée
 // sans moteur, donc sans son ni ffmpeg.
 type fakeSynth struct {
 	mu         sync.Mutex
-	enonces    []voix.Enonce
+	enonces    []synthese.Enonce
 	ecritures  int
 	pcm        []byte
 	sampleRate int
 	err        error
 }
 
-func (f *fakeSynth) SynthesizeTo(ctx context.Context, e voix.Enonce, sortie io.Writer) (int, error) {
+func (f *fakeSynth) SynthesizeTo(ctx context.Context, e synthese.Enonce, sortie io.Writer) (int, error) {
 	f.mu.Lock()
 	f.enonces = append(f.enonces, e)
 	f.mu.Unlock()
@@ -48,17 +48,17 @@ func (f *fakeSynth) SynthesizeTo(ctx context.Context, e voix.Enonce, sortie io.W
 
 func (f *fakeSynth) SampleRate() int { return f.sampleRate }
 
-func (f *fakeSynth) recu() []voix.Enonce {
+func (f *fakeSynth) recu() []synthese.Enonce {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return append([]voix.Enonce{}, f.enonces...)
+	return append([]synthese.Enonce{}, f.enonces...)
 }
 
 // serveurAvecSynthese monte le routeur complet : file de lecture et synthèse.
-func serveurAvecSynthese(t *testing.T, duree time.Duration) (http.Handler, *fakeSpeaker, *voix.Controleur, *fakeSynth) {
+func serveurAvecSynthese(t *testing.T, duree time.Duration) (http.Handler, *fakeSpeaker, *synthese.Controleur, *fakeSynth) {
 	t.Helper()
 	sp := newFakeSpeaker(duree)
-	c := voix.NouveauControleur(sp)
+	c := synthese.NouveauControleur(sp)
 	c.Start()
 	t.Cleanup(c.Close)
 	synth := &fakeSynth{pcm: []byte{1, 2, 3, 4, 5, 6}, sampleRate: 24000}
@@ -86,14 +86,14 @@ func TestSpeechRenvoieUnWavCompletParDefaut(t *testing.T) {
 		t.Errorf("Content-Type = %q, want \"audio/wav\"", ct)
 	}
 	corps := rec.Body.Bytes()
-	if len(corps) != voix.TailleEnteteWav+len(synth.pcm) {
-		t.Fatalf("taille du corps = %d, want %d", len(corps), voix.TailleEnteteWav+len(synth.pcm))
+	if len(corps) != synthese.TailleEnteteWav+len(synth.pcm) {
+		t.Fatalf("taille du corps = %d, want %d", len(corps), synthese.TailleEnteteWav+len(synth.pcm))
 	}
 	if !bytes.Equal(corps[:4], []byte("RIFF")) || !bytes.Equal(corps[8:12], []byte("WAVE")) {
 		t.Errorf("le corps ne commence pas par un en-tête RIFF/WAVE : % x", corps[:12])
 	}
-	if !bytes.Equal(corps[voix.TailleEnteteWav:], synth.pcm) {
-		t.Errorf("données audio = % x, want % x", corps[voix.TailleEnteteWav:], synth.pcm)
+	if !bytes.Equal(corps[synthese.TailleEnteteWav:], synth.pcm) {
+		t.Errorf("données audio = % x, want % x", corps[synthese.TailleEnteteWav:], synth.pcm)
 	}
 	if taux := binary.LittleEndian.Uint32(corps[24:]); taux != 24000 {
 		t.Errorf("sample rate dans l'en-tête = %d, want 24000", taux)
@@ -109,7 +109,7 @@ func TestSpeechNePasseParLaFileDeLecture(t *testing.T) {
 	appelJSON(t, h, "/v1/audio/speech", `{"input":"bonjour"}`)
 
 	rec := appel(t, h, http.MethodGet, "/queue", "")
-	var etat voix.Etat
+	var etat synthese.Etat
 	if err := json.Unmarshal(rec.Body.Bytes(), &etat); err != nil {
 		t.Fatalf("réponse illisible: %v", err)
 	}
@@ -264,7 +264,7 @@ func TestSpeechSignaleUnEchecDeSynthese(t *testing.T) {
 
 func TestSpeechRepond503SansMoteurDeSynthese(t *testing.T) {
 	sp := newFakeSpeaker(50 * time.Millisecond)
-	c := voix.NouveauControleur(sp)
+	c := synthese.NouveauControleur(sp)
 	c.Start()
 	t.Cleanup(c.Close)
 	h := newServer(c, nil, "estelle", func() []string { return nil }, 1.0, 1.0)
@@ -309,13 +309,13 @@ func TestSpeechStreameWavAvecUnEnteteDeLongueurInconnue(t *testing.T) {
 		t.Fatalf("code = %d, want %d", rec.Code, http.StatusOK)
 	}
 	corps := rec.Body.Bytes()
-	if len(corps) != voix.TailleEnteteWav+len(synth.pcm) {
-		t.Fatalf("taille = %d, want %d", len(corps), voix.TailleEnteteWav+len(synth.pcm))
+	if len(corps) != synthese.TailleEnteteWav+len(synth.pcm) {
+		t.Fatalf("taille = %d, want %d", len(corps), synthese.TailleEnteteWav+len(synth.pcm))
 	}
-	if taille := binary.LittleEndian.Uint32(corps[40:]); taille != voix.TailleInconnueWav {
-		t.Errorf("taille du bloc data = %#x, want %#x en streaming", taille, uint32(voix.TailleInconnueWav))
+	if taille := binary.LittleEndian.Uint32(corps[40:]); taille != synthese.TailleInconnueWav {
+		t.Errorf("taille du bloc data = %#x, want %#x en streaming", taille, uint32(synthese.TailleInconnueWav))
 	}
-	if !bytes.Equal(corps[voix.TailleEnteteWav:], synth.pcm) {
+	if !bytes.Equal(corps[synthese.TailleEnteteWav:], synth.pcm) {
 		t.Error("l'audio ne suit pas l'en-tête")
 	}
 }

@@ -19,7 +19,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/ThiraSoft/gladyss/voix"
+	"github.com/ThiraSoft/gladyss/synthese"
 )
 
 // defaultEOSThreshold règle la détection de fin de parole du modèle. La bibliothèque
@@ -141,24 +141,24 @@ func main() {
 	// lançable depuis n'importe quel répertoire.
 	root := binaryDir()
 
-	if !voix.ValiderVitesse(*speed) {
-		log.Fatalf("speed %v out of bounds: expected between %v and %v", *speed, voix.SpeedMin, voix.SpeedMax)
+	if !synthese.ValiderVitesse(*speed) {
+		log.Fatalf("speed %v out of bounds: expected between %v and %v", *speed, synthese.SpeedMin, synthese.SpeedMax)
 	}
-	if !voix.ValiderHauteur(*pitch) {
-		log.Fatalf("pitch %v out of bounds: expected between %v and %v", *pitch, voix.PitchMin, voix.PitchMax)
+	if !synthese.ValiderHauteur(*pitch) {
+		log.Fatalf("pitch %v out of bounds: expected between %v and %v", *pitch, synthese.PitchMin, synthese.PitchMax)
 	}
 
 	// Le modèle n'est chargé qu'au premier énoncé — le service reste léger tant
 	// que personne ne parle. Le chargement est une projection mémoire : il coûte
 	// désormais des millisecondes, là où le daemon Python coûtait des secondes.
 	voicesDir := resolve(root, "voix")
-	engine := voix.NouveauDiffere(func() (*voix.Moteur, error) {
-		return voix.Ouvrir(voicesDir, *voice, *player, *converter,
+	engine := synthese.NouveauDiffere(func() (*synthese.Moteur, error) {
+		return synthese.Ouvrir(voicesDir, *voice, *player, *converter,
 			*speed, *pitch, *eosThreshold)
 	}, *idleTimeout)
 	defer engine.Close()
 
-	controller := voix.NouveauControleur(engine)
+	controller := synthese.NouveauControleur(engine)
 	controller.Start()
 
 	server := &http.Server{

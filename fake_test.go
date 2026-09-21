@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ThiraSoft/gladyss/voix"
+	"github.com/ThiraSoft/gladyss/synthese"
 )
 
 // fakeSpeaker enregistre ce qu'on lui demande de prononcer et détecte tout
@@ -14,7 +14,7 @@ import (
 // séquentielle. Duplique celui de voix/controller_test.go : les tests du
 // binaire (http_test.go, openai_test.go, stream_test.go) ont besoin du même
 // faux Parleur, mais ne peuvent plus atteindre un identifiant non exporté
-// d'un autre paquet depuis que le moteur a déménagé dans voix.
+// d'un autre paquet depuis que le moteur a déménagé dans synthese.
 type fakeSpeaker struct {
 	mu        sync.Mutex
 	spoken    []string
@@ -26,14 +26,14 @@ type fakeSpeaker struct {
 	voix      []string
 	vitesses  []float64
 	pitchs    []float64
-	effets    [][]voix.Effect
+	effets    [][]synthese.Effect
 }
 
 func newFakeSpeaker(duree time.Duration) *fakeSpeaker {
 	return &fakeSpeaker{duree: duree, demarre: make(chan string, 64)}
 }
 
-func (f *fakeSpeaker) Speak(ctx context.Context, e voix.Enonce) error {
+func (f *fakeSpeaker) Speak(ctx context.Context, e synthese.Enonce) error {
 	text := e.Text
 	f.mu.Lock()
 	f.voix = append(f.voix, e.Voice)
@@ -96,10 +96,10 @@ func (f *fakeSpeaker) pitchsDemandes() []float64 {
 }
 
 // effetsDemandes renvoie la liste d'effets de chaque énoncé, dans l'ordre de lecture.
-func (f *fakeSpeaker) effetsDemandes() [][]voix.Effect {
+func (f *fakeSpeaker) effetsDemandes() [][]synthese.Effect {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return append([][]voix.Effect(nil), f.effets...)
+	return append([][]synthese.Effect(nil), f.effets...)
 }
 
 func (f *fakeSpeaker) interrompus() []string {
