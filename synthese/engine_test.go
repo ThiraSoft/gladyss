@@ -3,6 +3,7 @@ package synthese
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"os"
 	"path/filepath"
@@ -94,4 +95,47 @@ func TestVoicesContientLaVoixLocale(t *testing.T) {
 		}
 	}
 	t.Errorf("Voices = %v, attendu qu'il contienne gladyss", p.Voices())
+}
+
+// TestFramesEtSynthesizeToDisentLaMemeChose vérifie que les deux sorties du
+// moteur ne divergent pas : SynthesizeTo doit rendre exactement le PCM des
+// frames que Frames a données, sinon avatar et nova n'entendent pas la même
+// chose.
+func TestFramesEtSynthesizeToDisentLaMemeChose(t *testing.T) {
+	if testing.Short() {
+		t.Skip("charge le modèle")
+	}
+	m := moteurDeTest(t)
+	e := Enonce{Text: "Le vent se lève, il faut tenter de vivre."}
+
+	var frames []float32
+	if err := m.Frames(context.Background(), e, func(f []float32) {
+		frames = append(frames, f...)
+	}); err != nil {
+		t.Fatalf("Frames: %v", err)
+	}
+	if len(frames) == 0 {
+		t.Fatal("Frames n'a rendu aucun échantillon")
+	}
+
+	var buf bytes.Buffer
+	if _, err := m.SynthesizeTo(context.Background(), e, &buf); err != nil {
+		t.Fatalf("SynthesizeTo: %v", err)
+	}
+	if got, want := buf.Len(), 2*len(frames); got != want {
+		t.Errorf("SynthesizeTo a rendu %d octets, les frames en valent %d", got, want)
+	}
+}
+
+// TestPCMEcrete vérifie que les valeurs hors bornes sont écrêtées plutôt que
+// de déborder : un débordement s'entendrait bien plus qu'un écrêtage.
+func TestPCMEcrete(t *testing.T) {
+	out := PCM([]float32{0, 1, -1, 2, -2})
+	want := []int16{0, 32767, -32768, 32767, -32768}
+	for i, w := range want {
+		got := int16(binary.LittleEndian.Uint16(out[2*i:]))
+		if got != w {
+			t.Errorf("échantillon %d = %d, attendu %d", i, got, w)
+		}
+	}
 }

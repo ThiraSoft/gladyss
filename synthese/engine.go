@@ -133,14 +133,18 @@ func (p *Moteur) voice(name string) (*pockettts.Voice, error) {
 	return v, nil
 }
 
-// generate synthétise l'énoncé et écrit le PCM dans out au fil de la
-// génération. C'est le seul endroit qui parle au moteur ; Speak et
-// SynthesizeTo ne diffèrent que par la destination et par ce qu'ils en font.
-//
-// L'écriture au fil de l'eau est ce qui permet de commencer à jouer avant la
-// fin de la génération : le moteur rend une frame de 80 ms à la fois, il n'y a
-// aucune raison de les retenir.
-func (p *Moteur) generate(ctx context.Context, e Enonce, out io.Writer) error {
+// Frames synthétise l'énoncé et rend chaque frame d'échantillons, dans
+// [-1, 1] à SampleRate, dès que le modèle la produit. C'est le niveau le plus
+// bas du moteur : avatar s'en sert pour animer la bouche sur le son réel.
+func (p *Moteur) Frames(ctx context.Context, e Enonce, frame func([]float32)) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.frames(ctx, e, frame)
+}
+
+// frames fait le travail sans prendre le verrou : les appelants internes le
+// tiennent déjà.
+func (p *Moteur) frames(ctx context.Context, e Enonce, frame func([]float32)) error {
 	name := e.Voice
 	if name == "" {
 		name = p.defaultVoice
@@ -152,31 +156,43 @@ func (p *Moteur) generate(ctx context.Context, e Enonce, out io.Writer) error {
 
 	settings := p.settings
 	settings.Ctx = ctx
-	// Une erreur d'écriture n'arrête pas la génération par elle-même : le
-	// lecteur tué par une annulation est le cas normal, et le contexte le dit
-	// déjà. On jette les frames suivantes plutôt que d'écrire dans un tube mort.
-	broken := false
-	settings.Frame = func(samples []float32) {
-		if broken {
-			return
-		}
-		if _, err := out.Write(pcmBytes(samples)); err != nil {
-			broken = true
-		}
-	}
+	settings.Frame = frame
 
 	_, err = p.engine.Synthesize(e.Text, v, &settings)
 	return err
 }
 
-// pcmBytes convertit des échantillons de [-1, 1] en PCM signé 16 bits little-endian,
+// generate synthétise l'énoncé et écrit le PCM dans out au fil de la
+// génération. C'est le seul endroit qui parle au moteur ; Speak et
+// SynthesizeTo ne diffèrent que par la destination et par ce qu'ils en font.
+//
+// L'écriture au fil de l'eau est ce qui permet de commencer à jouer avant la
+// fin de la génération : le moteur rend une frame de 80 ms à la fois, il n'y a
+// aucune raison de les retenir.
+//
+// Une erreur d'écriture n'arrête pas la génération par elle-même : le lecteur
+// tué par une annulation est le cas normal, et le contexte le dit déjà. On
+// jette les frames suivantes plutôt que d'écrire dans un tube mort.
+func (p *Moteur) generate(ctx context.Context, e Enonce, out io.Writer) error {
+	broken := false
+	return p.frames(ctx, e, func(samples []float32) {
+		if broken {
+			return
+		}
+		if _, err := out.Write(PCM(samples)); err != nil {
+			broken = true
+		}
+	})
+}
+
+// PCM convertit des échantillons de [-1, 1] en PCM signé 16 bits little-endian,
 // le format que ffplay et l'en-tête WAV attendent. Les valeurs hors bornes sont
 // écrêtées : le modèle en produit rarement, et un débordement s'entendrait bien
 // plus qu'un écrêtage.
-func pcmBytes(samples []float32) []byte {
+func PCM(samples []float32) []byte {
 	out := make([]byte, 2*len(samples))
 	for i, s := range samples {
-		v := s * 32767
+		v := s * 32768
 		if v > 32767 {
 			v = 32767
 		} else if v < -32768 {
