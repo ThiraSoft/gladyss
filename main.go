@@ -135,7 +135,26 @@ func main() {
 		"model end-of-speech detection threshold: higher means it keeps going longer (see README)")
 	idleTimeout := flag.Duration("idle-timeout", defIdleTimeout,
 		"idle delay before the model is unloaded (0 to never unload)")
+	installerVoix := flag.Bool("installer-voix", false,
+		"télécharge les poids Pocket TTS manquants dans le cache Hugging Face, puis sort")
 	flag.Parse()
+
+	// --installer-voix ne fait que garantir le cache : pas de service, pas de
+	// moteur ouvert. install.sh délègue cette étape ici plutôt que de la
+	// dupliquer en curl.
+	if *installerVoix {
+		dernier := ""
+		err := synthese.Assurer(context.Background(), func(p synthese.Progression) {
+			if p.Fichier != dernier {
+				dernier = p.Fichier
+				log.Printf("%d/%d %s", p.Index, p.Nombre, p.Fichier)
+			}
+		})
+		if err != nil {
+			log.Fatalf("téléchargement des poids: %v", err)
+		}
+		return
+	}
 
 	// Les chemins par défaut sont relatifs au binaire : le service reste
 	// lançable depuis n'importe quel répertoire.
