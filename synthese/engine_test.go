@@ -139,3 +139,35 @@ func TestPCMEcrete(t *testing.T) {
 		}
 	}
 }
+
+// TestConvertisseurGardeSonStderr : une erreur du convertisseur revient dans
+// l'erreur rendue, au lieu de s'écrire sur le stderr du processus, où elle
+// passerait en travers de l'écran d'un hôte comme la TUI de nova.
+func TestConvertisseurGardeSonStderr(t *testing.T) {
+	var out bytes.Buffer
+	c, err := demarrerConvertisseur("sh", []string{"-c", "cat >/dev/null; echo filtre inconnu >&2; exit 3"}, &out)
+	if err != nil {
+		t.Fatalf("démarrage: %v", err)
+	}
+	if _, err := c.entree.Write([]byte{0, 0}); err != nil {
+		t.Fatalf("écriture: %v", err)
+	}
+	err = c.attendre()
+	if err == nil {
+		t.Fatal("attendre devrait rendre l'échec du convertisseur")
+	}
+	if !strings.Contains(err.Error(), "filtre inconnu") {
+		t.Errorf("erreur = %v, attendu le stderr du convertisseur", err)
+	}
+}
+
+// TestQueueBorneeGardeLaFin : un convertisseur bavard ne fait pas grossir la
+// mémoire, et c'est la fin, là où ffmpeg écrit sa raison, qui reste.
+func TestQueueBorneeGardeLaFin(t *testing.T) {
+	q := &queueBornee{max: 8}
+	q.Write([]byte("0123456789"))
+	q.Write([]byte("ab"))
+	if got := q.String(); got != "456789ab" {
+		t.Errorf("queue = %q, attendu %q", got, "456789ab")
+	}
+}

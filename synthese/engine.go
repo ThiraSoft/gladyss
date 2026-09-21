@@ -7,10 +7,10 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -310,35 +310,66 @@ func (p *Moteur) SynthesizeTo(ctx context.Context, e Enonce, out io.Writer) (int
 	}
 
 	dest := out
-	var converter *exec.Cmd
-	var converterStdin io.WriteCloser
+	var conv *convertisseur
 
 	// Sans filtre à appliquer, le PCM du moteur est déjà celui qu'on veut :
 	// inutile de payer un processus de plus.
 	if filter := audioFilters(p.sampleRate, speed, pitch, e.Effects); filter != "" {
-		converter = exec.Command(p.converter, converterArgs(p.sampleRate, filter)...)
 		var err error
-		if converterStdin, err = converter.StdinPipe(); err != nil {
+		if conv, err = demarrerConvertisseur(p.converter, converterArgs(p.sampleRate, filter), out); err != nil {
 			return p.sampleRate, err
 		}
-		converter.Stdout = out
-		converter.Stderr = os.Stderr
-		if err := converter.Start(); err != nil {
-			return p.sampleRate, fmt.Errorf("starting converter %q: %w", p.converter, err)
-		}
-		dest = converterStdin
+		dest = conv.entree
 	}
 
 	genErr := p.generate(ctx, e, dest)
 
-	if converter != nil {
-		_ = converterStdin.Close()
-		convErr := converter.Wait()
-		if genErr == nil && convErr != nil {
-			return p.sampleRate, fmt.Errorf("audio conversion: %w", convErr)
+	if conv != nil {
+		if convErr := conv.attendre(); genErr == nil && convErr != nil {
+			return p.sampleRate, convErr
 		}
 	}
 	return p.sampleRate, genErr
+}
+
+// convertisseur est un processus ffmpeg lancé pour un énoncé : il lit le PCM
+// brut sur entree et rend le PCM filtré sur la sortie donnée au démarrage.
+type convertisseur struct {
+	cmd    *exec.Cmd
+	entree io.WriteCloser
+	diag   *queueBornee
+}
+
+// demarrerConvertisseur lance nom avec args, sa sortie standard vers out.
+// Son stderr ne va pas sur celui du processus : chez un hôte qui dessine son
+// écran (la TUI de nova), une erreur de ffmpeg s'y écrirait en travers. Il
+// est gardé, borné, et joint à l'erreur que rend attendre.
+func demarrerConvertisseur(nom string, args []string, out io.Writer) (*convertisseur, error) {
+	cmd := exec.Command(nom, args...)
+	entree, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, err
+	}
+	diag := &queueBornee{max: 4 << 10}
+	cmd.Stdout = out
+	cmd.Stderr = diag
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("starting converter %q: %w", nom, err)
+	}
+	return &convertisseur{cmd: cmd, entree: entree, diag: diag}, nil
+}
+
+// attendre ferme l'entrée du convertisseur et attend sa fin. Un échec porte
+// ce que le processus a écrit sur son stderr.
+func (c *convertisseur) attendre() error {
+	_ = c.entree.Close()
+	if err := c.cmd.Wait(); err != nil {
+		if msg := strings.TrimSpace(c.diag.String()); msg != "" {
+			return fmt.Errorf("audio conversion: %w: %s", err, msg)
+		}
+		return fmt.Errorf("audio conversion: %w", err)
+	}
+	return nil
 }
 
 // SampleRate renvoie le taux du PCM produit. Il est connu dès le
@@ -404,4 +435,30 @@ func converterArgs(sampleRate int, filter string) []string {
 		"-f", "s16le", "-ar", rate, "-ac", "1",
 		"pipe:1",
 	}
+}
+
+// queueBornee garde les derniers octets écrits, jusqu'à max : assez pour le
+// message d'erreur d'un convertisseur, jamais de quoi grossir sans fin si
+// celui-ci bavarde. Elle ne sert qu'à un processus à la fois, mais os/exec
+// y écrit depuis sa propre goroutine : d'où le verrou.
+type queueBornee struct {
+	mu  sync.Mutex
+	max int
+	buf []byte
+}
+
+func (q *queueBornee) Write(p []byte) (int, error) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.buf = append(q.buf, p...)
+	if len(q.buf) > q.max {
+		q.buf = append([]byte(nil), q.buf[len(q.buf)-q.max:]...)
+	}
+	return len(p), nil
+}
+
+func (q *queueBornee) String() string {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return string(q.buf)
 }
