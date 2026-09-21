@@ -18,6 +18,8 @@ import (
 	"strconv"
 	"syscall"
 	"time"
+
+	"github.com/ThiraSoft/gladyss/voix"
 )
 
 // defaultEOSThreshold règle la détection de fin de parole du modèle. La bibliothèque
@@ -139,24 +141,24 @@ func main() {
 	// lançable depuis n'importe quel répertoire.
 	root := binaryDir()
 
-	if !validSpeed(*speed) {
-		log.Fatalf("speed %v out of bounds: expected between %v and %v", *speed, speedMin, speedMax)
+	if !voix.ValiderVitesse(*speed) {
+		log.Fatalf("speed %v out of bounds: expected between %v and %v", *speed, voix.SpeedMin, voix.SpeedMax)
 	}
-	if !validPitch(*pitch) {
-		log.Fatalf("pitch %v out of bounds: expected between %v and %v", *pitch, pitchMin, pitchMax)
+	if !voix.ValiderHauteur(*pitch) {
+		log.Fatalf("pitch %v out of bounds: expected between %v and %v", *pitch, voix.PitchMin, voix.PitchMax)
 	}
 
 	// Le modèle n'est chargé qu'au premier énoncé — le service reste léger tant
 	// que personne ne parle. Le chargement est une projection mémoire : il coûte
 	// désormais des millisecondes, là où le daemon Python coûtait des secondes.
 	voicesDir := resolve(root, "voix")
-	engine := NewLazyEngine(func() (*PocketTTS, error) {
-		return NewPocketTTS(voicesDir, *voice, *player, *converter,
+	engine := voix.NouveauDiffere(func() (*voix.Moteur, error) {
+		return voix.Ouvrir(voicesDir, *voice, *player, *converter,
 			*speed, *pitch, *eosThreshold)
 	}, *idleTimeout)
 	defer engine.Close()
 
-	controller := NewController(engine)
+	controller := voix.NouveauControleur(engine)
 	controller.Start()
 
 	server := &http.Server{

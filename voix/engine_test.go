@@ -1,4 +1,4 @@
-package main
+package voix
 
 import (
 	"bytes"
@@ -15,7 +15,7 @@ import (
 // moteurDeTest ouvre le vrai moteur sur les poids du cache Hugging Face, avec
 // la voix du dépôt. Il saute si le modèle n'est pas là : un clone nu doit
 // pouvoir lancer go test.
-func moteurDeTest(t *testing.T) *PocketTTS {
+func moteurDeTest(t *testing.T) *Moteur {
 	t.Helper()
 	lang, err := pockettts.LookupLanguage("french_24l")
 	if err != nil {
@@ -27,7 +27,7 @@ func moteurDeTest(t *testing.T) *PocketTTS {
 	if _, err := os.Stat(filepath.Join("voix", "gladyss.safetensors")); err != nil {
 		t.Skip("voix/gladyss.safetensors absent")
 	}
-	p, err := NewPocketTTS("voix", "gladyss", "ffplay", "ffmpeg", 1.0, 1.0, 0.0)
+	p, err := Ouvrir("voix", "gladyss", "ffplay", "ffmpeg", 1.0, 1.0, 0.0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,7 +44,7 @@ func TestSampleRateAvantToutEnonce(t *testing.T) {
 
 func TestSynthesizeRendDuPCM(t *testing.T) {
 	p := moteurDeTest(t)
-	audio, rate, err := p.Synthesize(context.Background(), Utterance{Text: "Bonjour."})
+	audio, rate, err := p.Synthesize(context.Background(), Enonce{Text: "Bonjour."})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +68,7 @@ func TestSynthesizeAnnule(t *testing.T) {
 	p := moteurDeTest(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, _, err := p.Synthesize(ctx, Utterance{Text: "Une phrase que personne n'entendra jamais."})
+	_, _, err := p.Synthesize(ctx, Enonce{Text: "Une phrase que personne n'entendra jamais."})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, attendu context.Canceled", err)
 	}
@@ -77,7 +77,7 @@ func TestSynthesizeAnnule(t *testing.T) {
 // Une voix inconnue est rejetée avec son nom, pas avec « aucun audio produit ».
 func TestSynthesizeVoixInconnue(t *testing.T) {
 	p := moteurDeTest(t)
-	_, _, err := p.Synthesize(context.Background(), Utterance{Text: "Bonjour.", Voice: "personne"})
+	_, _, err := p.Synthesize(context.Background(), Enonce{Text: "Bonjour.", Voice: "personne"})
 	if err == nil {
 		t.Fatal("attendu une erreur pour une voix inconnue")
 	}

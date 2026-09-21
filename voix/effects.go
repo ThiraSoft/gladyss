@@ -1,4 +1,4 @@
-package main
+package voix
 
 import (
 	"fmt"
@@ -13,11 +13,11 @@ type Effect struct {
 }
 
 const (
-	forceMin = 0.0
-	forceMax = 2.0
+	ForceMin = 0.0
+	ForceMax = 2.0
 )
 
-func validForce(f float64) bool { return f >= forceMin && f <= forceMax }
+func ValiderForce(f float64) bool { return f >= ForceMin && f <= ForceMax }
 
 // effectFactories associe chaque effet à la construction de sa chaîne ffmpeg.
 // Chaque fabrique reçoit une force déjà normalisée et bornée.
@@ -27,8 +27,8 @@ var effectFactories = map[string]func(force float64) string{
 	},
 }
 
-// availableEffects liste les noms d'effets, triés.
-func availableEffects() []string {
+// Effets liste les noms d'effets, triés.
+func Effets() []string {
 	names := make([]string, 0, len(effectFactories))
 	for name := range effectFactories {
 		names = append(names, name)
@@ -37,9 +37,9 @@ func availableEffects() []string {
 	return names
 }
 
-// effectFilter construit la chaîne ffmpeg d'un effet. Le second retour est faux
+// FiltreEffet construit la chaîne ffmpeg d'un effet. Le second retour est faux
 // si l'effet est inconnu.
-func effectFilter(name string, force float64) (string, bool) {
+func FiltreEffet(name string, force float64) (string, bool) {
 	factory, ok := effectFactories[name]
 	if !ok {
 		return "", false

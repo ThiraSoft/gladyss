@@ -1,4 +1,4 @@
-package main
+package voix
 
 import (
 	"strings"
@@ -87,26 +87,26 @@ func TestAudioFiltersCombinePitchAndSpeed(t *testing.T) {
 
 func TestValidSpeedRejectsOutOfBoundsValues(t *testing.T) {
 	for _, v := range []float64{0, -1, 0.4, 3.1, 100} {
-		if validSpeed(v) {
-			t.Errorf("validSpeed(%v) = true, want false", v)
+		if ValiderVitesse(v) {
+			t.Errorf("ValiderVitesse(%v) = true, want false", v)
 		}
 	}
 	for _, v := range []float64{0.5, 1, 1.3, 2, 3} {
-		if !validSpeed(v) {
-			t.Errorf("validSpeed(%v) = false, want true", v)
+		if !ValiderVitesse(v) {
+			t.Errorf("ValiderVitesse(%v) = false, want true", v)
 		}
 	}
 }
 
 func TestValidPitchRejectsOutOfBoundsValues(t *testing.T) {
 	for _, p := range []float64{0, -1, 0.4, 2.1, 50} {
-		if validPitch(p) {
-			t.Errorf("validPitch(%v) = true, want false", p)
+		if ValiderHauteur(p) {
+			t.Errorf("ValiderHauteur(%v) = true, want false", p)
 		}
 	}
 	for _, p := range []float64{0.5, 0.9, 1, 1.5, 2} {
-		if !validPitch(p) {
-			t.Errorf("validPitch(%v) = false, want true", p)
+		if !ValiderHauteur(p) {
+			t.Errorf("ValiderHauteur(%v) = false, want true", p)
 		}
 	}
 }

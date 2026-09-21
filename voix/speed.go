@@ -1,4 +1,4 @@
-package main
+package voix
 
 import (
 	"fmt"
@@ -10,18 +10,18 @@ import (
 // 0,5× elle traîne ; pour la hauteur, une octave de part et d'autre suffit
 // largement avant de tomber dans le chipmunk ou le monstre.
 const (
-	speedMin = 0.5
-	speedMax = 3.0
-	pitchMin = 0.5
-	pitchMax = 2.0
+	SpeedMin = 0.5
+	SpeedMax = 3.0
+	PitchMin = 0.5
+	PitchMax = 2.0
 	// atempoMin et atempoMax sont les limites d'un seul filtre atempo côté ffmpeg.
 	atempoMin = 0.5
 	atempoMax = 2.0
 )
 
-func validSpeed(v float64) bool { return v >= speedMin && v <= speedMax }
+func ValiderVitesse(v float64) bool { return v >= SpeedMin && v <= SpeedMax }
 
-func validPitch(p float64) bool { return p >= pitchMin && p <= pitchMax }
+func ValiderHauteur(p float64) bool { return p >= PitchMin && p <= PitchMax }
 
 // audioFilters construit la chaîne de filtres ffmpeg réalisant le débit et la
 // hauteur demandés. Renvoie "" si les deux sont neutres.
@@ -46,7 +46,7 @@ func audioFilters(sampleRate int, speed, pitch float64, effects []Effect) string
 	// Les effets viennent après le calage de hauteur et de tempo : ils
 	// travaillent sur la voix telle qu'elle sera entendue.
 	for _, e := range effects {
-		if filter, ok := effectFilter(e.Name, e.Force); ok && filter != "" {
+		if filter, ok := FiltreEffet(e.Name, e.Force); ok && filter != "" {
 			filters = append(filters, filter)
 		}
 	}

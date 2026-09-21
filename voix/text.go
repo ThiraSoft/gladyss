@@ -1,4 +1,4 @@
-package main
+package voix
 
 import (
 	"regexp"
@@ -91,13 +91,13 @@ var (
 	remainingSentinel = regexp.MustCompile("\x00+")
 )
 
-// cleanText réécrit le texte dans ce que le tokenizer du modèle sait lire.
+// Clean réécrit le texte dans ce que le tokenizer du modèle sait lire.
 //
 // Rien de ce qui s'entend n'est perdu : les caractères retirés sont ceux qui ne
 // se prononcent pas, les autres sont translittérés vers une graphie de même
 // prononciation ou dits en mots. Le texte rendu est donc celui qui sera
 // réellement prononcé — c'est lui que /say renvoie au client.
-func cleanText(text string) string {
+func Clean(text string) string {
 	text = strings.ReplaceAll(text, sentinel, "")
 	text = replacements.Replace(text)
 	text = uselessSentinel.ReplaceAllString(text, "$1")

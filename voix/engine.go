@@ -1,4 +1,4 @@
-package main
+package voix
 
 import (
 	"bytes"
@@ -17,10 +17,10 @@ import (
 	"github.com/ThiraSoft/golem/pockettts"
 )
 
-// PocketTTS synthétise dans ce processus, par le moteur Go de golem, et pousse
+// Moteur synthétise dans ce processus, par le moteur Go de golem, et pousse
 // l'audio produit vers un lecteur. Il n'y a plus ni tube ni daemon : les frames
 // arrivent par un callback, au fil de la génération.
-type PocketTTS struct {
+type Moteur struct {
 	engine   *pockettts.Engine
 	catalog  *voiceCatalog
 	settings pockettts.Settings
@@ -40,12 +40,12 @@ type PocketTTS struct {
 	rate float64
 }
 
-// NewPocketTTS charge le modèle et la voix par défaut. voicesDir est le
+// Ouvrir charge le modèle et la voix par défaut. voicesDir est le
 // répertoire des voix locales ; player joue l'audio sur les haut-parleurs,
 // converter applique la même chaîne de filtres hors lecture, pour la synthèse
 // rendue au client HTTP. eosThreshold règle la détection de fin de parole du
 // modèle (cf. main.go).
-func NewPocketTTS(voicesDir, voice, player, converter string, speed, pitch, eosThreshold float64) (*PocketTTS, error) {
+func Ouvrir(voicesDir, voice, player, converter string, speed, pitch, eosThreshold float64) (*Moteur, error) {
 	lang, err := pockettts.LookupLanguage(pockettts.DefaultLanguage)
 	if err != nil {
 		return nil, err
@@ -72,7 +72,7 @@ func NewPocketTTS(voicesDir, voice, player, converter string, speed, pitch, eosT
 	settings.EndThreshold = eosThreshold
 
 	catalog := newVoiceCatalog(voicesDir, lang)
-	p := &PocketTTS{
+	p := &Moteur{
 		engine:       engine,
 		catalog:      catalog,
 		settings:     settings,
@@ -101,7 +101,7 @@ func NewPocketTTS(voicesDir, voice, player, converter string, speed, pitch, eosT
 
 // voice charge une voix, ou rend celle déjà en mémoire. L'appelant tient mu,
 // sauf au démarrage où personne d'autre ne touche encore la structure.
-func (p *PocketTTS) voice(name string) (*pockettts.Voice, error) {
+func (p *Moteur) voice(name string) (*pockettts.Voice, error) {
 	if v, ok := p.loaded[name]; ok {
 		return v, nil
 	}
@@ -140,7 +140,7 @@ func (p *PocketTTS) voice(name string) (*pockettts.Voice, error) {
 // L'écriture au fil de l'eau est ce qui permet de commencer à jouer avant la
 // fin de la génération : le moteur rend une frame de 80 ms à la fois, il n'y a
 // aucune raison de les retenir.
-func (p *PocketTTS) generate(ctx context.Context, e Utterance, out io.Writer) error {
+func (p *Moteur) generate(ctx context.Context, e Enonce, out io.Writer) error {
 	name := e.Voice
 	if name == "" {
 		name = p.defaultVoice
@@ -188,7 +188,7 @@ func pcmBytes(samples []float32) []byte {
 }
 
 // Speak synthétise le texte et le joue jusqu'au bout, sauf annulation du contexte.
-func (p *PocketTTS) Speak(ctx context.Context, e Utterance) error {
+func (p *Moteur) Speak(ctx context.Context, e Enonce) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -263,7 +263,7 @@ func (p *PocketTTS) Speak(ctx context.Context, e Utterance) error {
 // Synthesize produit l'audio d'un énoncé et le renvoie au lieu de le jouer.
 // Commodité au-dessus de SynthesizeTo pour les appelants qui veulent le tout
 // en mémoire.
-func (p *PocketTTS) Synthesize(ctx context.Context, e Utterance) ([]byte, int, error) {
+func (p *Moteur) Synthesize(ctx context.Context, e Enonce) ([]byte, int, error) {
 	var audio bytes.Buffer
 	rate, err := p.SynthesizeTo(ctx, e, &audio)
 	return audio.Bytes(), rate, err
@@ -280,7 +280,7 @@ func (p *PocketTTS) Synthesize(ctx context.Context, e Utterance) ([]byte, int, e
 //
 // Le tube du daemon n'accepte qu'un énoncé à la fois : un appel pendant une
 // lecture sur les haut-parleurs attend son tour, exactement comme un second Speak.
-func (p *PocketTTS) SynthesizeTo(ctx context.Context, e Utterance, out io.Writer) (int, error) {
+func (p *Moteur) SynthesizeTo(ctx context.Context, e Enonce, out io.Writer) (int, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -328,13 +328,36 @@ func (p *PocketTTS) SynthesizeTo(ctx context.Context, e Utterance, out io.Writer
 // SampleRate renvoie le taux du PCM produit. Il est connu dès le
 // démarrage : les en-têtes HTTP et l'en-tête WAV doivent partir avant le
 // premier octet d'audio, donc avant toute synthèse.
-func (p *PocketTTS) SampleRate() int { return p.sampleRate }
+func (p *Moteur) SampleRate() int { return p.sampleRate }
 
 // Voices renvoie le catalogue annoncé par le moteur au démarrage.
-func (p *PocketTTS) Voices() []string { return p.voices }
+func (p *Moteur) Voices() []string { return p.voices }
 
 // Close libère la projection mémoire des poids.
-func (p *PocketTTS) Close() error { return p.engine.Close() }
+func (p *Moteur) Close() error { return p.engine.Close() }
+
+// Catalogue liste les voix prédéfinies de la langue du modèle présentes dans
+// le cache Hugging Face.
+func Catalogue() []string {
+	lang, err := pockettts.LookupLanguage(pockettts.DefaultLanguage)
+	if err != nil {
+		return nil
+	}
+	return pockettts.LocateVoices(lang)
+}
+
+// Voix bascule sur une autre voix, nommée comme à l'ouverture. Elle attend
+// l'énoncé en cours, s'il y en a un, et garde la voix courante si la
+// nouvelle ne charge pas.
+func (p *Moteur) Voix(source string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if _, err := p.voice(source); err != nil {
+		return err
+	}
+	p.defaultVoice = source
+	return nil
+}
 
 // playerArgs construit la ligne de commande ffplay pour lire du PCM brut
 // sur son entrée standard, avec un buffer minimal pour couper court à la latence.

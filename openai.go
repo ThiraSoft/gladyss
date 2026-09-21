@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+
+	"github.com/ThiraSoft/gladyss/voix"
 )
 
 // Synthesizer rend un énoncé en audio au lieu de le jouer sur les
@@ -18,7 +20,7 @@ import (
 type Synthesizer interface {
 	// SynthesizeTo écrit le PCM (signé 16 bits, little-endian, mono) dans
 	// sortie au fil de la génération, et renvoie son taux d'échantillonnage.
-	SynthesizeTo(ctx context.Context, e Utterance, out io.Writer) (int, error)
+	SynthesizeTo(ctx context.Context, e voix.Enonce, out io.Writer) (int, error)
 	// SampleRate est connu avant toute synthèse : les en-têtes doivent
 	// partir avant le premier octet d'audio.
 	SampleRate() int
@@ -48,15 +50,15 @@ func (e flushWriter) Write(p []byte) (int, error) {
 // Voice, Speed, Pitch et Effects sont ceux de /say : Pitch et Effects sont des
 // extensions maison, absentes de l'API OpenAI, sans effet si on les omet.
 type SpeechRequest struct {
-	Model          string   `json:"model"`
-	Input          string   `json:"input"`
-	Voice          string   `json:"voice"`
-	Speed          float64  `json:"speed"`
-	ResponseFormat string   `json:"response_format"`
-	LangCode       string   `json:"lang_code"`
-	Stream         bool     `json:"stream"`
-	Pitch          float64  `json:"pitch"`
-	Effects        []Effect `json:"effects"`
+	Model          string        `json:"model"`
+	Input          string        `json:"input"`
+	Voice          string        `json:"voice"`
+	Speed          float64       `json:"speed"`
+	ResponseFormat string        `json:"response_format"`
+	LangCode       string        `json:"lang_code"`
+	Stream         bool          `json:"stream"`
+	Pitch          float64       `json:"pitch"`
+	Effects        []voix.Effect `json:"effects"`
 }
 
 // speechFormats liste les formats de sortie servis. Le moteur produit du PCM :
@@ -104,7 +106,7 @@ func speech(synth Synthesizer, s settings) http.HandlerFunc {
 
 		// freeVoice : un client OpenAI envoie le nom de voix de son fournisseur
 		// habituel ("alloy", "ff_siwis"), qui n'a aucune raison d'exister ici.
-		utterance, err := s.normalize(Utterance{
+		utterance, err := s.normalize(voix.Enonce{
 			Text:    text,
 			Voice:   strings.TrimSpace(payload.Voice),
 			Speed:   payload.Speed,
@@ -136,7 +138,7 @@ func speech(synth Synthesizer, s settings) http.HandlerFunc {
 			w.WriteHeader(http.StatusOK)
 			out := io.Writer(flushWriter{w: w, f: flusher})
 			if format == "wav" {
-				if _, err := out.Write(streamingWavHeader(sampleRate)); err != nil {
+				if _, err := out.Write(voix.EnteteWavStreaming(sampleRate)); err != nil {
 					return
 				}
 			}
@@ -162,7 +164,7 @@ func speech(synth Synthesizer, s settings) http.HandlerFunc {
 
 		audio := pcm.Bytes()
 		if format == "wav" {
-			audio = wrapWav(audio, sampleRate)
+			audio = voix.EnveloppeWav(audio, sampleRate)
 		}
 		w.Header().Set("Content-Length", strconv.Itoa(len(audio)))
 		w.WriteHeader(http.StatusOK)

@@ -8,6 +8,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/ThiraSoft/gladyss/voix"
 )
 
 // maxTextSize borne le corps accepté par /say et /v1/audio/speech
@@ -36,12 +38,12 @@ type settings struct {
 // de leur fournisseur habituel, et les refuser les casserait tous. Sur /say,
 // où la voix est choisie explicitement, une faute de frappe doit se voir : la
 // route y passe false.
-func (s settings) normalize(u Utterance, freeVoice bool) (Utterance, error) {
+func (s settings) normalize(u voix.Enonce, freeVoice bool) (voix.Enonce, error) {
 	// Le tokenizer du modèle ne connaît qu'une partie des caractères du
 	// français : on ramène le texte dans son vocabulaire ici, au point de
 	// passage commun aux deux routes, pour que /say et /v1/audio/speech
 	// synthétisent exactement le même texte.
-	u.Text = cleanText(u.Text)
+	u.Text = voix.Clean(u.Text)
 	if u.Text == "" {
 		return u, errUnspeakableText
 	}
@@ -56,13 +58,13 @@ func (s settings) normalize(u Utterance, freeVoice bool) (Utterance, error) {
 		u.Pitch = s.defaultPitch
 	}
 
-	if !validSpeed(u.Speed) {
+	if !voix.ValiderVitesse(u.Speed) {
 		return u, textError(fmt.Sprintf(
-			"speed %v out of bounds: expected between %v and %v", u.Speed, speedMin, speedMax))
+			"speed %v out of bounds: expected between %v and %v", u.Speed, voix.SpeedMin, voix.SpeedMax))
 	}
-	if !validPitch(u.Pitch) {
+	if !voix.ValiderHauteur(u.Pitch) {
 		return u, textError(fmt.Sprintf(
-			"pitch %v out of bounds: expected between %v and %v", u.Pitch, pitchMin, pitchMax))
+			"pitch %v out of bounds: expected between %v and %v", u.Pitch, voix.PitchMin, voix.PitchMax))
 	}
 	if knownVoices := s.knownVoices(); len(knownVoices) > 0 && !slices.Contains(knownVoices, u.Voice) {
 		if !freeVoice {
@@ -73,15 +75,15 @@ func (s settings) normalize(u Utterance, freeVoice bool) (Utterance, error) {
 	}
 
 	for _, effect := range u.Effects {
-		if _, known := effectFilter(effect.Name, 1.0); !known {
+		if _, known := voix.FiltreEffet(effect.Name, 1.0); !known {
 			return u, textError(fmt.Sprintf(
 				"unknown effect %q — available effects: %s",
-				effect.Name, strings.Join(availableEffects(), ", ")))
+				effect.Name, strings.Join(voix.Effets(), ", ")))
 		}
-		if !validForce(effect.Force) {
+		if !voix.ValiderForce(effect.Force) {
 			return u, textError(fmt.Sprintf(
 				"force %v out of bounds for effect %q: expected between %v and %v",
-				effect.Force, effect.Name, forceMin, forceMax))
+				effect.Force, effect.Name, voix.ForceMin, voix.ForceMax))
 		}
 	}
 	return u, nil
@@ -92,7 +94,7 @@ func (s settings) normalize(u Utterance, freeVoice bool) (Utterance, error) {
 // une liste vide désactive la validation — notamment tant que le moteur
 // paresseux n'a pas encore démarré. synth peut être nil : /v1/audio/speech
 // répond alors 503, les routes de lecture restent servies.
-func newServer(c *Controller, synth Synthesizer, defaultVoice string, knownVoices func() []string, defaultSpeed, defaultPitch float64) http.Handler {
+func newServer(c *voix.Controleur, synth Synthesizer, defaultVoice string, knownVoices func() []string, defaultSpeed, defaultPitch float64) http.Handler {
 	mux := http.NewServeMux()
 	s := settings{
 		defaultVoice: defaultVoice,
@@ -109,7 +111,7 @@ func newServer(c *Controller, synth Synthesizer, defaultVoice string, knownVoice
 		}
 
 		utterance, err := s.normalize(
-			Utterance{Text: text, Voice: voice, Speed: speed, Pitch: pitch, Effects: effects}, false)
+			voix.Enonce{Text: text, Voice: voice, Speed: speed, Pitch: pitch, Effects: effects}, false)
 		if err != nil {
 			respondError(w, http.StatusBadRequest, err.Error())
 			return
@@ -154,9 +156,9 @@ func newServer(c *Controller, synth Synthesizer, defaultVoice string, knownVoice
 
 	mux.HandleFunc("/effects", func(w http.ResponseWriter, r *http.Request) {
 		respondJSON(w, http.StatusOK, map[string]any{
-			"effects":   availableEffects(),
-			"force_min": forceMin,
-			"force_max": forceMax,
+			"effects":   voix.Effets(),
+			"force_min": voix.ForceMin,
+			"force_max": voix.ForceMax,
 		})
 	})
 
@@ -171,7 +173,7 @@ func newServer(c *Controller, synth Synthesizer, defaultVoice string, knownVoice
 // sont les mêmes pour /say et pour /say/stream, où ils valent pour tout le
 // flux : c'est la seule forme qu'un corps versé au fil de l'eau laisse encore
 // disponible.
-func extractOptions(r *http.Request) (voice string, speed, pitch float64, effects []Effect, err error) {
+func extractOptions(r *http.Request) (voice string, speed, pitch float64, effects []voix.Effect, err error) {
 	voice = strings.TrimSpace(r.URL.Query().Get("voice"))
 
 	if raw := strings.TrimSpace(r.URL.Query().Get("speed")); raw != "" {
@@ -191,7 +193,7 @@ func extractOptions(r *http.Request) (voice string, speed, pitch float64, effect
 	if raw := strings.TrimSpace(r.URL.Query().Get("fx")); raw != "" {
 		for _, name := range strings.Split(raw, ",") {
 			if name = strings.TrimSpace(name); name != "" {
-				effects = append(effects, Effect{Name: name})
+				effects = append(effects, voix.Effect{Name: name})
 			}
 		}
 	}
@@ -215,7 +217,7 @@ func extractOptions(r *http.Request) (voice string, speed, pitch float64, effect
 // extractUtterance accepte le texte et la voix sous trois formes, de la plus
 // pratique en curl à la plus structurée : paramètres de requête, corps brut,
 // ou corps JSON {"text":"…","voice":"…"}.
-func extractUtterance(r *http.Request) (text, voice string, speed, pitch float64, effects []Effect, err error) {
+func extractUtterance(r *http.Request) (text, voice string, speed, pitch float64, effects []voix.Effect, err error) {
 	voice, speed, pitch, effects, err = extractOptions(r)
 	if err != nil {
 		return "", voice, speed, pitch, effects, err
@@ -232,11 +234,11 @@ func extractUtterance(r *http.Request) (text, voice string, speed, pitch float64
 
 	if strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
 		var payload struct {
-			Text    string   `json:"text"`
-			Voice   string   `json:"voice"`
-			Speed   float64  `json:"speed"`
-			Pitch   float64  `json:"pitch"`
-			Effects []Effect `json:"effects"`
+			Text    string        `json:"text"`
+			Voice   string        `json:"voice"`
+			Speed   float64       `json:"speed"`
+			Pitch   float64       `json:"pitch"`
+			Effects []voix.Effect `json:"effects"`
 		}
 		if err := json.Unmarshal(body, &payload); err != nil {
 			return "", voice, speed, pitch, effects, errInvalidJSON

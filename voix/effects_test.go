@@ -1,4 +1,4 @@
-package main
+package voix
 
 import (
 	"strings"
@@ -6,26 +6,26 @@ import (
 )
 
 func TestAvailableEffectsAreKnown(t *testing.T) {
-	names := availableEffects()
+	names := Effets()
 	if len(names) == 0 {
 		t.Fatal("aucun effet disponible")
 	}
 	for _, want := range []string{"echo"} {
-		if _, ok := effectFilter(want, 1.0); !ok {
+		if _, ok := FiltreEffet(want, 1.0); !ok {
 			t.Errorf("effet %q absent du catalogue", want)
 		}
 	}
 }
 
 func TestUnknownEffectIsRejected(t *testing.T) {
-	if _, ok := effectFilter("dubstep", 1.0); ok {
-		t.Error("effectFilter(\"dubstep\") = ok, want refusé")
+	if _, ok := FiltreEffet("dubstep", 1.0); ok {
+		t.Error("FiltreEffet(\"dubstep\") = ok, want refusé")
 	}
 }
 
 func TestForceModulatesTheProducedFilter(t *testing.T) {
-	low, _ := effectFilter("echo", 0.5)
-	high, _ := effectFilter("echo", 2.0)
+	low, _ := FiltreEffet("echo", 0.5)
+	high, _ := FiltreEffet("echo", 2.0)
 	if low == high {
 		t.Errorf("la force ne change rien au filtre echo : %q", low)
 	}
@@ -33,13 +33,13 @@ func TestForceModulatesTheProducedFilter(t *testing.T) {
 
 func TestValidForceRejectsOutOfBoundsValues(t *testing.T) {
 	for _, f := range []float64{-1, -0.1, 2.1, 10} {
-		if validForce(f) {
-			t.Errorf("validForce(%v) = true, want false", f)
+		if ValiderForce(f) {
+			t.Errorf("ValiderForce(%v) = true, want false", f)
 		}
 	}
 	for _, f := range []float64{0, 0.5, 1, 2} {
-		if !validForce(f) {
-			t.Errorf("validForce(%v) = false, want true", f)
+		if !ValiderForce(f) {
+			t.Errorf("ValiderForce(%v) = false, want true", f)
 		}
 	}
 }
