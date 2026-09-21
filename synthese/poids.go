@@ -201,18 +201,26 @@ func Assurer(ctx context.Context, progression func(Progression)) error {
 	}
 
 	// Ce que le dépôt publie : le modèle et son tokenizer d'un côté, les voix
-	// du catalogue de l'autre.
+	// du catalogue de l'autre. Un répertoire injoignable n'est silencieux que
+	// si ce qu'il devait fournir est déjà dans le cache : sinon, Assurer
+	// rendrait nil pour un modèle en fait absent, et l'appelant enchaînerait
+	// sur l'ouverture du moteur avec un message obscur sur des poids
+	// manquants au lieu de dire que le téléchargement a raté.
 	racine := "languages/" + lang.Name
 	principal, errPrincipal := lister(ctx, racine)
-	voix, errVoix := lister(ctx, racine+"/embeddings")
-
-	if errPrincipal != nil && errVoix != nil {
-		// Hors ligne : un cache déjà pourvu reste utilisable, sans faire
-		// échouer l'appelant.
-		if Poids() {
-			return nil
+	if errPrincipal != nil {
+		if !Poids() {
+			return fmt.Errorf("hugging face injoignable : impossible de lire le contenu de %s/%s: %w", depot, racine, errPrincipal)
 		}
-		return fmt.Errorf("hugging face injoignable : impossible de lire le contenu de %s: %w", depot, errPrincipal)
+		principal = nil
+	}
+
+	voix, errVoix := lister(ctx, racine+"/embeddings")
+	if errVoix != nil {
+		if len(pockettts.LocateVoices(lang)) == 0 {
+			return fmt.Errorf("hugging face injoignable : impossible de lire le contenu de %s/%s/embeddings: %w", depot, racine, errVoix)
+		}
+		voix = nil
 	}
 
 	var publies []fichierDistant
