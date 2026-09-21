@@ -16,7 +16,7 @@ import (
 // (~50 000 caractères, largement au-delà de ce qu'on veut écouter d'une traite).
 const maxTextSize = 50 << 10
 
-// settings porte les valeurs par défaut du service et le catalogue de synthese.
+// settings porte les valeurs par défaut du service et son catalogue de voix.
 // Partagé par /say et /v1/audio/speech, pour que les deux routes valident
 // exactement les mêmes bornes.
 type settings struct {
