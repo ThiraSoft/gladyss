@@ -1,4 +1,4 @@
-package main
+package synthese
 
 import (
 	"context"
@@ -27,7 +27,7 @@ func newFakeSpeaker(duree time.Duration) *fakeSpeaker {
 	return &fakeSpeaker{duree: duree, demarre: make(chan string, 64)}
 }
 
-func (f *fakeSpeaker) Speak(ctx context.Context, e Utterance) error {
+func (f *fakeSpeaker) Speak(ctx context.Context, e Enonce) error {
 	text := e.Text
 	f.mu.Lock()
 	f.voix = append(f.voix, e.Voice)
@@ -116,13 +116,13 @@ func (f *fakeSpeaker) attendDemarrage(t *testing.T) string {
 
 func TestLesEnoncesSontLusSequentiellementDansLOrdre(t *testing.T) {
 	sp := newFakeSpeaker(20 * time.Millisecond)
-	c := NewController(sp)
+	c := NouveauControleur(sp)
 	c.Start()
 	defer c.Close()
 
-	c.Enqueue(Utterance{Text: "un"})
-	c.Enqueue(Utterance{Text: "deux"})
-	c.Enqueue(Utterance{Text: "trois"})
+	c.Enqueue(Enonce{Text: "un"})
+	c.Enqueue(Enonce{Text: "deux"})
+	c.Enqueue(Enonce{Text: "trois"})
 
 	attendreQue(t, func() bool { return len(sp.prononces()) == 3 })
 
@@ -141,12 +141,12 @@ func TestLesEnoncesSontLusSequentiellementDansLOrdre(t *testing.T) {
 
 func TestSkipInterrompLEnonceEnCoursEtEnchaineSurLeSuivant(t *testing.T) {
 	sp := newFakeSpeaker(300 * time.Millisecond)
-	c := NewController(sp)
+	c := NouveauControleur(sp)
 	c.Start()
 	defer c.Close()
 
-	c.Enqueue(Utterance{Text: "un"})
-	c.Enqueue(Utterance{Text: "deux"})
+	c.Enqueue(Enonce{Text: "un"})
+	c.Enqueue(Enonce{Text: "deux"})
 
 	if texte := sp.attendDemarrage(t); texte != "un" {
 		t.Fatalf("premier énoncé démarré = %q, want \"un\"", texte)
@@ -170,13 +170,13 @@ func TestSkipInterrompLEnonceEnCoursEtEnchaineSurLeSuivant(t *testing.T) {
 
 func TestStopInterrompLaLectureEtVideLaFile(t *testing.T) {
 	sp := newFakeSpeaker(300 * time.Millisecond)
-	c := NewController(sp)
+	c := NouveauControleur(sp)
 	c.Start()
 	defer c.Close()
 
-	c.Enqueue(Utterance{Text: "un"})
-	c.Enqueue(Utterance{Text: "deux"})
-	c.Enqueue(Utterance{Text: "trois"})
+	c.Enqueue(Enonce{Text: "un"})
+	c.Enqueue(Enonce{Text: "deux"})
+	c.Enqueue(Enonce{Text: "trois"})
 	sp.attendDemarrage(t)
 
 	if retires := c.Stop(); retires != 2 {
@@ -196,15 +196,15 @@ func TestStopInterrompLaLectureEtVideLaFile(t *testing.T) {
 
 func TestApresStopLeServiceAccepteDeNouveauxEnonces(t *testing.T) {
 	sp := newFakeSpeaker(20 * time.Millisecond)
-	c := NewController(sp)
+	c := NouveauControleur(sp)
 	c.Start()
 	defer c.Close()
 
-	c.Enqueue(Utterance{Text: "un"})
+	c.Enqueue(Enonce{Text: "un"})
 	sp.attendDemarrage(t)
 	c.Stop()
 
-	c.Enqueue(Utterance{Text: "après"})
+	c.Enqueue(Enonce{Text: "après"})
 	attendreQue(t, func() bool {
 		p := sp.prononces()
 		return len(p) == 1 && p[0] == "après"
@@ -213,32 +213,32 @@ func TestApresStopLeServiceAccepteDeNouveauxEnonces(t *testing.T) {
 
 func TestLaPositionCompteLEnonceDejaEnCoursDeLecture(t *testing.T) {
 	sp := newFakeSpeaker(300 * time.Millisecond)
-	c := NewController(sp)
+	c := NouveauControleur(sp)
 	c.Start()
 	defer c.Close()
 
-	if position := c.Enqueue(Utterance{Text: "un"}); position != 1 {
+	if position := c.Enqueue(Enonce{Text: "un"}); position != 1 {
 		t.Errorf("position du premier énoncé = %d, want 1", position)
 	}
 	sp.attendDemarrage(t) // "un" est maintenant en cours, plus dans la file
 
-	if position := c.Enqueue(Utterance{Text: "deux"}); position != 2 {
+	if position := c.Enqueue(Enonce{Text: "deux"}); position != 2 {
 		t.Errorf("position = %d, want 2 : l'énoncé en cours compte dans l'attente", position)
 	}
-	if position := c.Enqueue(Utterance{Text: "trois"}); position != 3 {
+	if position := c.Enqueue(Enonce{Text: "trois"}); position != 3 {
 		t.Errorf("position = %d, want 3", position)
 	}
 }
 
 func TestSnapshotDecritLEnonceEnCoursEtLaFileEnAttente(t *testing.T) {
 	sp := newFakeSpeaker(300 * time.Millisecond)
-	c := NewController(sp)
+	c := NouveauControleur(sp)
 	c.Start()
 	defer c.Close()
 
-	c.Enqueue(Utterance{Text: "un"})
-	c.Enqueue(Utterance{Text: "deux"})
-	c.Enqueue(Utterance{Text: "trois"})
+	c.Enqueue(Enonce{Text: "un"})
+	c.Enqueue(Enonce{Text: "deux"})
+	c.Enqueue(Enonce{Text: "trois"})
 	sp.attendDemarrage(t)
 
 	etat := c.Snapshot()
@@ -259,10 +259,10 @@ func TestSnapshotDecritLEnonceEnCoursEtLaFileEnAttente(t *testing.T) {
 
 func TestCloseInterrompLEnonceEnCours(t *testing.T) {
 	sp := newFakeSpeaker(10 * time.Second)
-	c := NewController(sp)
+	c := NouveauControleur(sp)
 	c.Start()
 
-	c.Enqueue(Utterance{Text: "interminable"})
+	c.Enqueue(Enonce{Text: "interminable"})
 	sp.attendDemarrage(t)
 
 	fini := make(chan struct{})
@@ -280,7 +280,7 @@ func TestCloseInterrompLEnonceEnCours(t *testing.T) {
 
 func TestSkipSansLectureEnCoursNeFaitRien(t *testing.T) {
 	sp := newFakeSpeaker(10 * time.Millisecond)
-	c := NewController(sp)
+	c := NouveauControleur(sp)
 	c.Start()
 	defer c.Close()
 

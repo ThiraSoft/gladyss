@@ -7,12 +7,14 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/ThiraSoft/gladyss/synthese"
 )
 
-// serveurDeTest monte le routeur au-dessus d'un Controller piloté par un faux
-// Speaker. Le synthétiseur est monté aussi mais ne sert pas ici : voir
+// serveurDeTest monte le routeur au-dessus d'un synthese.Controleur piloté par un faux
+// Parleur. Le synthétiseur est monté aussi mais ne sert pas ici : voir
 // serveurAvecSynthese pour les tests de /v1/audio/speech.
-func serveurDeTest(t *testing.T, duree time.Duration) (http.Handler, *fakeSpeaker, *Controller) {
+func serveurDeTest(t *testing.T, duree time.Duration) (http.Handler, *fakeSpeaker, *synthese.Controleur) {
 	t.Helper()
 	h, sp, c, _ := serveurAvecSynthese(t, duree)
 	return h, sp, c
@@ -144,7 +146,7 @@ func TestQueueExposeLEtatDeLaFile(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("code = %d, want %d", rec.Code, http.StatusOK)
 	}
-	var etat State
+	var etat synthese.Etat
 	if err := json.Unmarshal(rec.Body.Bytes(), &etat); err != nil {
 		t.Fatalf("réponse illisible: %v — corps: %s", err, rec.Body)
 	}

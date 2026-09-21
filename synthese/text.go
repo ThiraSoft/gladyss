@@ -1,4 +1,4 @@
-package main
+package synthese
 
 import (
 	"regexp"
@@ -21,6 +21,16 @@ import (
 // pas de sens — et devient une espace ordinaire partout ailleurs. Un caractère
 // nul ne peut pas venir du texte : il est retiré de l'entrée par précaution.
 const sentinel = "\x00"
+
+// dropEmoji retire les pictogrammes, qu'aucune voix ne sait lire et que le
+// tokenizer découperait en octets bruts. Porté depuis avatar, qui l'avait
+// ajouté de son côté sur sa copie de ce fichier.
+func dropEmoji(r rune) rune {
+	if r >= 0x1F000 || (r >= 0x2600 && r <= 0x27BF) || r == 0xFE0F || r == 0x200D {
+		return -1
+	}
+	return r
+}
 
 var replacements = strings.NewReplacer(
 	// Apostrophes : retirées, les deux morceaux soudés. « l'entrée » devient
@@ -56,6 +66,8 @@ var replacements = strings.NewReplacer(
 	"©", sentinel, "®", sentinel, "™", sentinel,
 	"/", sentinel, "\\", sentinel, "|", sentinel, "~", sentinel, "^", sentinel,
 	"<", sentinel, ">", sentinel, "#", sentinel,
+	// Emphase markdown, qu'un LLM glisse malgré le prompt (ajout d'avatar).
+	"*", sentinel, "_", sentinel,
 
 	// Symboles à lecture univoque : dits en mots, comme les lirait quelqu'un.
 	// « n° » d'abord, sinon « n° 5 » sortirait en « n degrés 5 ».
@@ -91,14 +103,15 @@ var (
 	remainingSentinel = regexp.MustCompile("\x00+")
 )
 
-// cleanText réécrit le texte dans ce que le tokenizer du modèle sait lire.
+// Clean réécrit le texte dans ce que le tokenizer du modèle sait lire.
 //
 // Rien de ce qui s'entend n'est perdu : les caractères retirés sont ceux qui ne
 // se prononcent pas, les autres sont translittérés vers une graphie de même
 // prononciation ou dits en mots. Le texte rendu est donc celui qui sera
 // réellement prononcé — c'est lui que /say renvoie au client.
-func cleanText(text string) string {
+func Clean(text string) string {
 	text = strings.ReplaceAll(text, sentinel, "")
+	text = strings.Map(dropEmoji, text)
 	text = replacements.Replace(text)
 	text = uselessSentinel.ReplaceAllString(text, "$1")
 	text = remainingSentinel.ReplaceAllString(text, " ")

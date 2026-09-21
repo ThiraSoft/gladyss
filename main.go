@@ -18,6 +18,8 @@ import (
 	"strconv"
 	"syscall"
 	"time"
+
+	"github.com/ThiraSoft/gladyss/synthese"
 )
 
 // defaultEOSThreshold règle la détection de fin de parole du modèle. La bibliothèque
@@ -133,30 +135,49 @@ func main() {
 		"model end-of-speech detection threshold: higher means it keeps going longer (see README)")
 	idleTimeout := flag.Duration("idle-timeout", defIdleTimeout,
 		"idle delay before the model is unloaded (0 to never unload)")
+	installerVoix := flag.Bool("installer-voix", false,
+		"télécharge les poids Pocket TTS manquants dans le cache Hugging Face, puis sort")
 	flag.Parse()
+
+	// --installer-voix ne fait que garantir le cache : pas de service, pas de
+	// moteur ouvert. install.sh délègue cette étape ici plutôt que de la
+	// dupliquer en curl.
+	if *installerVoix {
+		dernier := ""
+		err := synthese.Assurer(context.Background(), func(p synthese.Progression) {
+			if p.Fichier != dernier {
+				dernier = p.Fichier
+				log.Printf("%d/%d %s", p.Index, p.Nombre, p.Fichier)
+			}
+		})
+		if err != nil {
+			log.Fatalf("téléchargement des poids: %v", err)
+		}
+		return
+	}
 
 	// Les chemins par défaut sont relatifs au binaire : le service reste
 	// lançable depuis n'importe quel répertoire.
 	root := binaryDir()
 
-	if !validSpeed(*speed) {
-		log.Fatalf("speed %v out of bounds: expected between %v and %v", *speed, speedMin, speedMax)
+	if !synthese.ValiderVitesse(*speed) {
+		log.Fatalf("speed %v out of bounds: expected between %v and %v", *speed, synthese.SpeedMin, synthese.SpeedMax)
 	}
-	if !validPitch(*pitch) {
-		log.Fatalf("pitch %v out of bounds: expected between %v and %v", *pitch, pitchMin, pitchMax)
+	if !synthese.ValiderHauteur(*pitch) {
+		log.Fatalf("pitch %v out of bounds: expected between %v and %v", *pitch, synthese.PitchMin, synthese.PitchMax)
 	}
 
 	// Le modèle n'est chargé qu'au premier énoncé — le service reste léger tant
 	// que personne ne parle. Le chargement est une projection mémoire : il coûte
 	// désormais des millisecondes, là où le daemon Python coûtait des secondes.
 	voicesDir := resolve(root, "voix")
-	engine := NewLazyEngine(func() (*PocketTTS, error) {
-		return NewPocketTTS(voicesDir, *voice, *player, *converter,
+	engine := synthese.NouveauDiffere(func() (*synthese.Moteur, error) {
+		return synthese.Ouvrir(voicesDir, *voice, *player, *converter,
 			*speed, *pitch, *eosThreshold)
 	}, *idleTimeout)
 	defer engine.Close()
 
-	controller := NewController(engine)
+	controller := synthese.NouveauControleur(engine)
 	controller.Start()
 
 	server := &http.Server{

@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	"github.com/ThiraSoft/gladyss/oral"
+	"github.com/ThiraSoft/gladyss/synthese"
 )
 
 // maxStreamSize borne un flux entier, là où maxTextSize borne un énoncé : un
@@ -26,7 +27,7 @@ const morceauLu = 4 << 10
 // Le corps se donne en clair, en morceaux (Transfer-Encoding: chunked) ; les
 // réglages passent en paramètres de requête, puisqu'ils valent pour tout le
 // flux. « ?filter=off » rend le texte entier, sans le tri du narrateur.
-func sayStream(c *Controller, s settings) http.HandlerFunc {
+func sayStream(c *synthese.Controleur, s settings) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		voice, speed, pitch, effects, err := extractOptions(r)
 		if err != nil {
@@ -34,7 +35,7 @@ func sayStream(c *Controller, s settings) http.HandlerFunc {
 			return
 		}
 
-		modele := Utterance{Voice: voice, Speed: speed, Pitch: pitch, Effects: effects}
+		modele := synthese.Enonce{Voice: voice, Speed: speed, Pitch: pitch, Effects: effects}
 		// Les réglages sont jugés avant le premier mot : une voix inconnue doit
 		// se voir tout de suite, pas une fois la moitié du tour déjà en file.
 		temoin := modele

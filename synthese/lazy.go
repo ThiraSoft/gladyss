@@ -1,4 +1,4 @@
-package main
+package synthese
 
 import (
 	"context"
@@ -8,20 +8,20 @@ import (
 	"time"
 )
 
-// defaultSampleRate est le taux du modèle Pocket TTS, connu avant tout
+// SampleRate est le taux du modèle Pocket TTS, connu avant tout
 // démarrage : les en-têtes HTTP peuvent en dépendre sans réveiller le moteur.
-const defaultSampleRate = 24000
+const SampleRate = 24000
 
-// LazyEngine démarre le daemon Python au premier énoncé plutôt qu'au
-// lancement du service, et le décharge après une période d'inactivité. Entre
-// deux réveils, aucun processus Python ni modèle en mémoire — juste ce
-// service HTTP, léger, qui attend.
-type LazyEngine struct {
-	factory     func() (*PocketTTS, error)
+// Differe charge le moteur au premier énoncé plutôt qu'à l'ouverture, et le
+// décharge après une période d'inactivité. Entre deux réveils, aucun modèle
+// en mémoire : l'appelant (le service HTTP de gladyss, ou nova) reste léger
+// tant que personne ne parle.
+type Differe struct {
+	factory     func() (*Moteur, error)
 	idleTimeout time.Duration
 
 	mu          sync.Mutex
-	active      *PocketTTS
+	active      *Moteur
 	lastUsed    time.Time
 	knownVoices []string
 	sampleRate  int
@@ -30,11 +30,11 @@ type LazyEngine struct {
 	wg   sync.WaitGroup
 }
 
-// NewLazyEngine prend la même fabrique que NewPocketTTS, différée : elle
+// NouveauDiffere prend la même fabrique que Ouvrir, différée : elle
 // n'est appelée qu'à la première demande. idleTimeout règle le délai avant
 // déchargement automatique ; 0 désactive le déchargement.
-func NewLazyEngine(factory func() (*PocketTTS, error), idleTimeout time.Duration) *LazyEngine {
-	m := &LazyEngine{
+func NouveauDiffere(factory func() (*Moteur, error), idleTimeout time.Duration) *Differe {
+	m := &Differe{
 		factory:     factory,
 		idleTimeout: idleTimeout,
 		quit:        make(chan struct{}),
@@ -48,8 +48,8 @@ func NewLazyEngine(factory func() (*PocketTTS, error), idleTimeout time.Duration
 
 // ensureStarted renvoie le moteur actif, en le démarrant si besoin. Le
 // verrou reste posé pendant tout le démarrage : deux demandes simultanées au
-// réveil ne doivent lancer le daemon qu'une fois.
-func (m *LazyEngine) ensureStarted() (*PocketTTS, error) {
+// réveil ne doivent charger le modèle qu'une fois.
+func (m *Differe) ensureStarted() (*Moteur, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -69,7 +69,16 @@ func (m *LazyEngine) ensureStarted() (*PocketTTS, error) {
 	return engine, nil
 }
 
-func (m *LazyEngine) Speak(ctx context.Context, e Utterance) error {
+// Demarrer charge le moteur tout de suite s'il ne tourne pas, sans rien
+// synthétiser. Un appelant qui veut savoir avant le premier énoncé si le
+// moteur s'ouvre (voix absente, fichier corrompu) s'en sert pour dire l'échec
+// au lieu de le découvrir en pleine phrase.
+func (m *Differe) Demarrer() error {
+	_, err := m.ensureStarted()
+	return err
+}
+
+func (m *Differe) Speak(ctx context.Context, e Enonce) error {
 	engine, err := m.ensureStarted()
 	if err != nil {
 		return err
@@ -81,7 +90,7 @@ func (m *LazyEngine) Speak(ctx context.Context, e Utterance) error {
 	return err
 }
 
-func (m *LazyEngine) SynthesizeTo(ctx context.Context, e Utterance, out io.Writer) (int, error) {
+func (m *Differe) SynthesizeTo(ctx context.Context, e Enonce, out io.Writer) (int, error) {
 	engine, err := m.ensureStarted()
 	if err != nil {
 		return m.SampleRate(), err
@@ -95,25 +104,25 @@ func (m *LazyEngine) SynthesizeTo(ctx context.Context, e Utterance, out io.Write
 
 // SampleRate est renvoyé sans réveiller le moteur : c'est une
 // constante du modèle, connue avant toute synthèse.
-func (m *LazyEngine) SampleRate() int {
+func (m *Differe) SampleRate() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.sampleRate != 0 {
 		return m.sampleRate
 	}
-	return defaultSampleRate
+	return SampleRate
 }
 
 // Voices renvoie le catalogue connu. Vide tant que le moteur n'a jamais
 // démarré — la validation des noms de voix est alors désactivée (cf.
 // newServer), comme pour un service qui n'a pas encore de catalogue.
-func (m *LazyEngine) Voices() []string {
+func (m *Differe) Voices() []string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.knownVoices
 }
 
-func (m *LazyEngine) watchIdle() {
+func (m *Differe) watchIdle() {
 	defer m.wg.Done()
 	check := time.NewTicker(time.Minute)
 	defer check.Stop()
@@ -127,7 +136,7 @@ func (m *LazyEngine) watchIdle() {
 	}
 }
 
-func (m *LazyEngine) unloadIfIdle() {
+func (m *Differe) unloadIfIdle() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.active == nil || time.Since(m.lastUsed) < m.idleTimeout {
@@ -139,7 +148,7 @@ func (m *LazyEngine) unloadIfIdle() {
 }
 
 // Close arrête le moteur s'il tourne et la surveillance d'inactivité.
-func (m *LazyEngine) Close() error {
+func (m *Differe) Close() error {
 	close(m.quit)
 	m.wg.Wait()
 	m.mu.Lock()

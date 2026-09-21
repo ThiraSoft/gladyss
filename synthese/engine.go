@@ -1,4 +1,4 @@
-package main
+package synthese
 
 import (
 	"bytes"
@@ -7,20 +7,20 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/ThiraSoft/golem/pockettts"
 )
 
-// PocketTTS synthétise dans ce processus, par le moteur Go de golem, et pousse
+// Moteur synthétise dans ce processus, par le moteur Go de golem, et pousse
 // l'audio produit vers un lecteur. Il n'y a plus ni tube ni daemon : les frames
 // arrivent par un callback, au fil de la génération.
-type PocketTTS struct {
+type Moteur struct {
 	engine   *pockettts.Engine
 	catalog  *voiceCatalog
 	settings pockettts.Settings
@@ -40,12 +40,12 @@ type PocketTTS struct {
 	rate float64
 }
 
-// NewPocketTTS charge le modèle et la voix par défaut. voicesDir est le
+// Ouvrir charge le modèle et la voix par défaut. voicesDir est le
 // répertoire des voix locales ; player joue l'audio sur les haut-parleurs,
 // converter applique la même chaîne de filtres hors lecture, pour la synthèse
 // rendue au client HTTP. eosThreshold règle la détection de fin de parole du
 // modèle (cf. main.go).
-func NewPocketTTS(voicesDir, voice, player, converter string, speed, pitch, eosThreshold float64) (*PocketTTS, error) {
+func Ouvrir(voicesDir, voice, player, converter string, speed, pitch, eosThreshold float64) (*Moteur, error) {
 	lang, err := pockettts.LookupLanguage(pockettts.DefaultLanguage)
 	if err != nil {
 		return nil, err
@@ -72,7 +72,7 @@ func NewPocketTTS(voicesDir, voice, player, converter string, speed, pitch, eosT
 	settings.EndThreshold = eosThreshold
 
 	catalog := newVoiceCatalog(voicesDir, lang)
-	p := &PocketTTS{
+	p := &Moteur{
 		engine:       engine,
 		catalog:      catalog,
 		settings:     settings,
@@ -101,7 +101,7 @@ func NewPocketTTS(voicesDir, voice, player, converter string, speed, pitch, eosT
 
 // voice charge une voix, ou rend celle déjà en mémoire. L'appelant tient mu,
 // sauf au démarrage où personne d'autre ne touche encore la structure.
-func (p *PocketTTS) voice(name string) (*pockettts.Voice, error) {
+func (p *Moteur) voice(name string) (*pockettts.Voice, error) {
 	if v, ok := p.loaded[name]; ok {
 		return v, nil
 	}
@@ -133,14 +133,18 @@ func (p *PocketTTS) voice(name string) (*pockettts.Voice, error) {
 	return v, nil
 }
 
-// generate synthétise l'énoncé et écrit le PCM dans out au fil de la
-// génération. C'est le seul endroit qui parle au moteur ; Speak et
-// SynthesizeTo ne diffèrent que par la destination et par ce qu'ils en font.
-//
-// L'écriture au fil de l'eau est ce qui permet de commencer à jouer avant la
-// fin de la génération : le moteur rend une frame de 80 ms à la fois, il n'y a
-// aucune raison de les retenir.
-func (p *PocketTTS) generate(ctx context.Context, e Utterance, out io.Writer) error {
+// Frames synthétise l'énoncé et rend chaque frame d'échantillons, dans
+// [-1, 1] à SampleRate, dès que le modèle la produit. C'est le niveau le plus
+// bas du moteur : avatar s'en sert pour animer la bouche sur le son réel.
+func (p *Moteur) Frames(ctx context.Context, e Enonce, frame func([]float32)) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.frames(ctx, e, frame)
+}
+
+// frames fait le travail sans prendre le verrou : les appelants internes le
+// tiennent déjà.
+func (p *Moteur) frames(ctx context.Context, e Enonce, frame func([]float32)) error {
 	name := e.Voice
 	if name == "" {
 		name = p.defaultVoice
@@ -152,31 +156,43 @@ func (p *PocketTTS) generate(ctx context.Context, e Utterance, out io.Writer) er
 
 	settings := p.settings
 	settings.Ctx = ctx
-	// Une erreur d'écriture n'arrête pas la génération par elle-même : le
-	// lecteur tué par une annulation est le cas normal, et le contexte le dit
-	// déjà. On jette les frames suivantes plutôt que d'écrire dans un tube mort.
-	broken := false
-	settings.Frame = func(samples []float32) {
-		if broken {
-			return
-		}
-		if _, err := out.Write(pcmBytes(samples)); err != nil {
-			broken = true
-		}
-	}
+	settings.Frame = frame
 
 	_, err = p.engine.Synthesize(e.Text, v, &settings)
 	return err
 }
 
-// pcmBytes convertit des échantillons de [-1, 1] en PCM signé 16 bits little-endian,
+// generate synthétise l'énoncé et écrit le PCM dans out au fil de la
+// génération. C'est le seul endroit qui parle au moteur ; Speak et
+// SynthesizeTo ne diffèrent que par la destination et par ce qu'ils en font.
+//
+// L'écriture au fil de l'eau est ce qui permet de commencer à jouer avant la
+// fin de la génération : le moteur rend une frame de 80 ms à la fois, il n'y a
+// aucune raison de les retenir.
+//
+// Une erreur d'écriture n'arrête pas la génération par elle-même : le lecteur
+// tué par une annulation est le cas normal, et le contexte le dit déjà. On
+// jette les frames suivantes plutôt que d'écrire dans un tube mort.
+func (p *Moteur) generate(ctx context.Context, e Enonce, out io.Writer) error {
+	broken := false
+	return p.frames(ctx, e, func(samples []float32) {
+		if broken {
+			return
+		}
+		if _, err := out.Write(PCM(samples)); err != nil {
+			broken = true
+		}
+	})
+}
+
+// PCM convertit des échantillons de [-1, 1] en PCM signé 16 bits little-endian,
 // le format que ffplay et l'en-tête WAV attendent. Les valeurs hors bornes sont
 // écrêtées : le modèle en produit rarement, et un débordement s'entendrait bien
 // plus qu'un écrêtage.
-func pcmBytes(samples []float32) []byte {
+func PCM(samples []float32) []byte {
 	out := make([]byte, 2*len(samples))
 	for i, s := range samples {
-		v := s * 32767
+		v := s * 32768
 		if v > 32767 {
 			v = 32767
 		} else if v < -32768 {
@@ -188,7 +204,7 @@ func pcmBytes(samples []float32) []byte {
 }
 
 // Speak synthétise le texte et le joue jusqu'au bout, sauf annulation du contexte.
-func (p *PocketTTS) Speak(ctx context.Context, e Utterance) error {
+func (p *Moteur) Speak(ctx context.Context, e Enonce) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -263,7 +279,7 @@ func (p *PocketTTS) Speak(ctx context.Context, e Utterance) error {
 // Synthesize produit l'audio d'un énoncé et le renvoie au lieu de le jouer.
 // Commodité au-dessus de SynthesizeTo pour les appelants qui veulent le tout
 // en mémoire.
-func (p *PocketTTS) Synthesize(ctx context.Context, e Utterance) ([]byte, int, error) {
+func (p *Moteur) Synthesize(ctx context.Context, e Enonce) ([]byte, int, error) {
 	var audio bytes.Buffer
 	rate, err := p.SynthesizeTo(ctx, e, &audio)
 	return audio.Bytes(), rate, err
@@ -280,7 +296,7 @@ func (p *PocketTTS) Synthesize(ctx context.Context, e Utterance) ([]byte, int, e
 //
 // Le tube du daemon n'accepte qu'un énoncé à la fois : un appel pendant une
 // lecture sur les haut-parleurs attend son tour, exactement comme un second Speak.
-func (p *PocketTTS) SynthesizeTo(ctx context.Context, e Utterance, out io.Writer) (int, error) {
+func (p *Moteur) SynthesizeTo(ctx context.Context, e Enonce, out io.Writer) (int, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -294,47 +310,101 @@ func (p *PocketTTS) SynthesizeTo(ctx context.Context, e Utterance, out io.Writer
 	}
 
 	dest := out
-	var converter *exec.Cmd
-	var converterStdin io.WriteCloser
+	var conv *convertisseur
 
 	// Sans filtre à appliquer, le PCM du moteur est déjà celui qu'on veut :
 	// inutile de payer un processus de plus.
 	if filter := audioFilters(p.sampleRate, speed, pitch, e.Effects); filter != "" {
-		converter = exec.Command(p.converter, converterArgs(p.sampleRate, filter)...)
 		var err error
-		if converterStdin, err = converter.StdinPipe(); err != nil {
+		if conv, err = demarrerConvertisseur(p.converter, converterArgs(p.sampleRate, filter), out); err != nil {
 			return p.sampleRate, err
 		}
-		converter.Stdout = out
-		converter.Stderr = os.Stderr
-		if err := converter.Start(); err != nil {
-			return p.sampleRate, fmt.Errorf("starting converter %q: %w", p.converter, err)
-		}
-		dest = converterStdin
+		dest = conv.entree
 	}
 
 	genErr := p.generate(ctx, e, dest)
 
-	if converter != nil {
-		_ = converterStdin.Close()
-		convErr := converter.Wait()
-		if genErr == nil && convErr != nil {
-			return p.sampleRate, fmt.Errorf("audio conversion: %w", convErr)
+	if conv != nil {
+		if convErr := conv.attendre(); genErr == nil && convErr != nil {
+			return p.sampleRate, convErr
 		}
 	}
 	return p.sampleRate, genErr
 }
 
+// convertisseur est un processus ffmpeg lancé pour un énoncé : il lit le PCM
+// brut sur entree et rend le PCM filtré sur la sortie donnée au démarrage.
+type convertisseur struct {
+	cmd    *exec.Cmd
+	entree io.WriteCloser
+	diag   *queueBornee
+}
+
+// demarrerConvertisseur lance nom avec args, sa sortie standard vers out.
+// Son stderr ne va pas sur celui du processus : chez un hôte qui dessine son
+// écran (la TUI de nova), une erreur de ffmpeg s'y écrirait en travers. Il
+// est gardé, borné, et joint à l'erreur que rend attendre.
+func demarrerConvertisseur(nom string, args []string, out io.Writer) (*convertisseur, error) {
+	cmd := exec.Command(nom, args...)
+	entree, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, err
+	}
+	diag := &queueBornee{max: 4 << 10}
+	cmd.Stdout = out
+	cmd.Stderr = diag
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("starting converter %q: %w", nom, err)
+	}
+	return &convertisseur{cmd: cmd, entree: entree, diag: diag}, nil
+}
+
+// attendre ferme l'entrée du convertisseur et attend sa fin. Un échec porte
+// ce que le processus a écrit sur son stderr.
+func (c *convertisseur) attendre() error {
+	_ = c.entree.Close()
+	if err := c.cmd.Wait(); err != nil {
+		if msg := strings.TrimSpace(c.diag.String()); msg != "" {
+			return fmt.Errorf("audio conversion: %w: %s", err, msg)
+		}
+		return fmt.Errorf("audio conversion: %w", err)
+	}
+	return nil
+}
+
 // SampleRate renvoie le taux du PCM produit. Il est connu dès le
 // démarrage : les en-têtes HTTP et l'en-tête WAV doivent partir avant le
 // premier octet d'audio, donc avant toute synthèse.
-func (p *PocketTTS) SampleRate() int { return p.sampleRate }
+func (p *Moteur) SampleRate() int { return p.sampleRate }
 
 // Voices renvoie le catalogue annoncé par le moteur au démarrage.
-func (p *PocketTTS) Voices() []string { return p.voices }
+func (p *Moteur) Voices() []string { return p.voices }
 
 // Close libère la projection mémoire des poids.
-func (p *PocketTTS) Close() error { return p.engine.Close() }
+func (p *Moteur) Close() error { return p.engine.Close() }
+
+// Catalogue liste les voix prédéfinies de la langue du modèle présentes dans
+// le cache Hugging Face.
+func Catalogue() []string {
+	lang, err := pockettts.LookupLanguage(pockettts.DefaultLanguage)
+	if err != nil {
+		return nil
+	}
+	return pockettts.LocateVoices(lang)
+}
+
+// Voix bascule sur une autre voix, nommée comme à l'ouverture. Elle attend
+// l'énoncé en cours, s'il y en a un, et garde la voix courante si la
+// nouvelle ne charge pas.
+func (p *Moteur) Voix(source string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if _, err := p.voice(source); err != nil {
+		return err
+	}
+	p.defaultVoice = source
+	return nil
+}
 
 // playerArgs construit la ligne de commande ffplay pour lire du PCM brut
 // sur son entrée standard, avec un buffer minimal pour couper court à la latence.
@@ -365,4 +435,30 @@ func converterArgs(sampleRate int, filter string) []string {
 		"-f", "s16le", "-ar", rate, "-ac", "1",
 		"pipe:1",
 	}
+}
+
+// queueBornee garde les derniers octets écrits, jusqu'à max : assez pour le
+// message d'erreur d'un convertisseur, jamais de quoi grossir sans fin si
+// celui-ci bavarde. Elle ne sert qu'à un processus à la fois, mais os/exec
+// y écrit depuis sa propre goroutine : d'où le verrou.
+type queueBornee struct {
+	mu  sync.Mutex
+	max int
+	buf []byte
+}
+
+func (q *queueBornee) Write(p []byte) (int, error) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.buf = append(q.buf, p...)
+	if len(q.buf) > q.max {
+		q.buf = append([]byte(nil), q.buf[len(q.buf)-q.max:]...)
+	}
+	return len(p), nil
+}
+
+func (q *queueBornee) String() string {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return string(q.buf)
 }

@@ -1,12 +1,12 @@
-package main
+package synthese
 
 import (
 	"context"
 	"sync"
 )
 
-// Utterance est une demande de lecture : un texte et la voix qui doit le prononcer.
-type Utterance struct {
+// Enonce est une demande de lecture : un texte et la voix qui doit le prononcer.
+type Enonce struct {
 	Text  string `json:"text"`
 	Voice string `json:"voice,omitempty"`
 	// Speed est un facteur de tempo ; 0 signifie « celle du service ».
@@ -17,19 +17,19 @@ type Utterance struct {
 	Effects []Effect `json:"effects,omitempty"`
 }
 
-// Speaker prononce un énoncé de bout en bout. L'implémentation doit interrompre
+// Parleur prononce un énoncé de bout en bout. L'implémentation doit interrompre
 // la lecture dès que le contexte est annulé.
-type Speaker interface {
-	Speak(ctx context.Context, e Utterance) error
+type Parleur interface {
+	Speak(ctx context.Context, e Enonce) error
 }
 
-// Controller sérialise les demandes de lecture : une seule à la fois, dans l'ordre d'arrivée.
-type Controller struct {
-	sp Speaker
+// Controleur sérialise les demandes de lecture : une seule à la fois, dans l'ordre d'arrivée.
+type Controleur struct {
+	sp Parleur
 
 	mu      sync.Mutex
-	queue   []Utterance
-	current Utterance
+	queue   []Enonce
+	current Enonce
 	// cancel interrompt l'énoncé en cours de lecture ; nil quand rien n'est lu.
 	cancel context.CancelFunc
 
@@ -38,8 +38,8 @@ type Controller struct {
 	wg   sync.WaitGroup
 }
 
-func NewController(sp Speaker) *Controller {
-	return &Controller{
+func NouveauControleur(sp Parleur) *Controleur {
+	return &Controleur{
 		sp:   sp,
 		wake: make(chan struct{}, 1),
 		quit: make(chan struct{}),
@@ -47,14 +47,14 @@ func NewController(sp Speaker) *Controller {
 }
 
 // Start démarre le worker qui vide la file séquentiellement.
-func (c *Controller) Start() {
+func (c *Controleur) Start() {
 	c.wg.Add(1)
 	go c.loop()
 }
 
 // Enqueue ajoute un énoncé en fin de file et renvoie son rang d'attente
 // (1 = prochain énoncé à être lu).
-func (c *Controller) Enqueue(e Utterance) int {
+func (c *Controleur) Enqueue(e Enonce) int {
 	c.mu.Lock()
 	c.queue = append(c.queue, e)
 	position := len(c.queue)
@@ -67,7 +67,7 @@ func (c *Controller) Enqueue(e Utterance) int {
 }
 
 // Close arrête le worker en interrompant la lecture en cours.
-func (c *Controller) Close() {
+func (c *Controleur) Close() {
 	close(c.quit)
 	c.mu.Lock()
 	if c.cancel != nil {
@@ -78,25 +78,25 @@ func (c *Controller) Close() {
 	c.wg.Wait()
 }
 
-// State est une photographie de la file, destinée à l'exposition HTTP.
-type State struct {
-	Current Utterance   `json:"current"`
-	Pending []Utterance `json:"pending"`
+// Etat est une photographie de la file, destinée à l'exposition HTTP.
+type Etat struct {
+	Current Enonce   `json:"current"`
+	Pending []Enonce `json:"pending"`
 }
 
 // Snapshot renvoie l'état courant de la file.
-func (c *Controller) Snapshot() State {
+func (c *Controleur) Snapshot() Etat {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return State{
+	return Etat{
 		Current: c.current,
-		Pending: append([]Utterance{}, c.queue...),
+		Pending: append([]Enonce{}, c.queue...),
 	}
 }
 
 // Stop interrompt l'énoncé en cours et purge la file.
 // Renvoie le nombre d'énoncés retirés de la file (l'énoncé en cours n'est pas compté).
-func (c *Controller) Stop() int {
+func (c *Controleur) Stop() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -109,7 +109,7 @@ func (c *Controller) Stop() int {
 }
 
 // Skip interrompt l'énoncé en cours. Renvoie false si rien n'était en cours de lecture.
-func (c *Controller) Skip() bool {
+func (c *Controleur) Skip() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.cancel == nil {
@@ -119,18 +119,18 @@ func (c *Controller) Skip() bool {
 	return true
 }
 
-func (c *Controller) wakeUp() {
+func (c *Controleur) wakeUp() {
 	select {
 	case c.wake <- struct{}{}:
 	default: // un réveil est déjà en attente, inutile d'en empiler un second
 	}
 }
 
-func (c *Controller) dequeue() (Utterance, bool) {
+func (c *Controleur) dequeue() (Enonce, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if len(c.queue) == 0 {
-		return Utterance{}, false
+		return Enonce{}, false
 	}
 	e := c.queue[0]
 	c.queue = c.queue[1:]
@@ -141,7 +141,7 @@ func (c *Controller) dequeue() (Utterance, bool) {
 	return e, true
 }
 
-func (c *Controller) loop() {
+func (c *Controleur) loop() {
 	defer c.wg.Done()
 	for {
 		select {
@@ -165,7 +165,7 @@ func (c *Controller) loop() {
 }
 
 // runUtterance prononce un énoncé en le rendant interruptible par Skip.
-func (c *Controller) runUtterance(e Utterance) {
+func (c *Controleur) runUtterance(e Enonce) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	c.mu.Lock()
@@ -175,7 +175,7 @@ func (c *Controller) runUtterance(e Utterance) {
 	defer func() {
 		c.mu.Lock()
 		c.cancel = nil
-		c.current = Utterance{}
+		c.current = Enonce{}
 		c.mu.Unlock()
 		cancel()
 	}()
