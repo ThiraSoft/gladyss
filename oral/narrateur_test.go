@@ -18,7 +18,7 @@ func TestRuleNarrator_PlainProse(t *testing.T) {
 func TestRuleNarrator_RejectCodeAndPaths(t *testing.T) {
 	n := NewRuleNarrator()
 	cases := []string{
-		"Utilise `fmt.Println` ici",         // backtick inline
+		"Lance `go test ./...` ici",         // code inline qui ne se dit pas
 		"Le fichier est /home/ricardo/x.go", // chemin absolu
 		"Vois ./oral/narrateur.go pour ça",  // chemin relatif
 		"Doc: https://example.com/page",     // URL
@@ -139,10 +139,6 @@ func TestRuleNarrator_PathRe(t *testing.T) {
 
 func TestRuleNarrator_RejectTechnical(t *testing.T) {
 	n := NewRuleNarrator()
-	long := strings.Repeat("mot ", 60) // > 200 caractères
-	if got := n.Filter(long); len(got) != 0 {
-		t.Errorf("Filter(long) = %#v, want empty", got)
-	}
 	dense := "a=b; c<-d; e:=f{g}; h|i&j^k" // forte densité de symboles
 	if got := n.Filter(dense); len(got) != 0 {
 		t.Errorf("Filter(dense) = %#v, want empty", got)
@@ -174,6 +170,66 @@ func TestRuleNarrator_PonctueUneLigneSansPonctuationFinale(t *testing.T) {
 	for in, want := range cases {
 		if got := n.Filter(in); !reflect.DeepEqual(got, want) {
 			t.Errorf("Filter(%q) = %#v, want %#v", in, got, want)
+		}
+	}
+}
+
+// Un identifiant entre backticks se dit : rejeter toute la phrase pour un
+// `view_file` faisait taire des paragraphes entiers.
+func TestRuleNarrator_CodeInlineLisible(t *testing.T) {
+	n := NewRuleNarrator()
+	cases := map[string][]string{
+		"Écoute-le avec `view_file` et réponds.": {"Écoute-le avec view file et réponds."},
+		"Le fichier `app.js` appelle `stop()`.":  nil, // stop() n'est pas un mot
+		"Utilise `fmt.Println` ici":              {"Utilise fmt.Println ici."},
+		"Un backtick ` orphelin reste suspect.":  nil,
+		"La fonction `beginTTS` coupe le tour.":  {"La fonction beginTTS coupe le tour."},
+	}
+	for in, want := range cases {
+		if got := n.Filter(in); !reflect.DeepEqual(got, want) {
+			t.Errorf("Filter(%q) = %#v, want %#v", in, got, want)
+		}
+	}
+}
+
+// Un lien markdown se lit par son texte, son URL ne se dit pas.
+func TestRuleNarrator_LienMarkdown(t *testing.T) {
+	n := NewRuleNarrator()
+	cases := map[string][]string{
+		"Vois [`app.js`](file:///home/ricardo/dev/nova/static/app.js#L2513) pour ça.": {"Vois app.js pour ça."},
+		"Le [crible du narrateur](https://example.com/x) est sévère.":                 {"Le crible du narrateur est sévère."},
+	}
+	for in, want := range cases {
+		if got := n.Filter(in); !reflect.DeepEqual(got, want) {
+			t.Errorf("Filter(%q) = %#v, want %#v", in, got, want)
+		}
+	}
+}
+
+// Une phrase longue se coupe à ses virgules au lieu d'être jetée.
+func TestRuleNarrator_PhraseLongueDecoupee(t *testing.T) {
+	n := NewRuleNarrator()
+	a := strings.Repeat("un mot ", 20) + "encore,"
+	b := strings.Repeat("deux mots ", 12) + "pour finir."
+	got := n.Filter(a + " " + b)
+	want := []string{a, b}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("Filter(longue) = %#v, want %#v", got, want)
+	}
+	for _, l := range got {
+		if len([]rune(l)) > maxLineLen {
+			t.Errorf("morceau de %d caractères, max %d", len([]rune(l)), maxLineLen)
+		}
+	}
+	// Sans virgule, la coupe tombe entre deux mots.
+	sans := strings.TrimSpace(strings.Repeat("mot ", 60))
+	got = n.Filter(sans)
+	if len(got) < 2 || strings.ReplaceAll(strings.Join(got, " "), ".", "") != sans {
+		t.Errorf("Filter(sans virgule) = %#v", got)
+	}
+	for _, l := range got {
+		if len([]rune(l)) > maxLineLen+1 {
+			t.Errorf("morceau de %d caractères", len([]rune(l)))
 		}
 	}
 }

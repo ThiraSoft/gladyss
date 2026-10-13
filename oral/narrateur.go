@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	maxLineLen    = 200  // au-delà : probablement technique, non oral
+	maxLineLen    = 200  // au-delà, la ligne est coupée en morceaux plus courts
 	maxSymbolFrac = 0.30 // fraction de symboles non alphanumériques tolérée
 )
 
@@ -22,6 +22,9 @@ var (
 	numListRe = regexp.MustCompile(`^\d+[.)]\s`)
 	sepRe     = regexp.MustCompile(`^(---+|\*\*\*+|___+)$`) // ---, ***, ___
 	emphRe    = regexp.MustCompile(`(\*\*|__|\*|_)`)
+	lienRe    = regexp.MustCompile(`\[([^\]]+)\]\([^()\s]+\)`)
+	codeRe    = regexp.MustCompile("`([^`]*)`")
+	motRe     = regexp.MustCompile(`^[\pL\pN][\pL\pN_.-]{0,39}$`)
 )
 
 // Narrator décide, à partir du texte reçu, quelles lignes lire à voix haute.
@@ -55,16 +58,75 @@ func (r *RuleNarrator) Filter(text string) []string {
 		if rejectRaw(trimmed) {
 			continue
 		}
-		clean := decorate(trimmed)
+		// Liens et code inline passent avant la décoration : celle-ci prend
+		// le « _ » d'un identifiant pour une emphase.
+		clean, ok := codeInline(lienRe.ReplaceAllString(trimmed, "$1"))
+		if !ok {
+			continue
+		}
+		clean = decorate(clean)
 		if clean == "" || reject(clean) {
 			continue
 		}
 		// La ponctuation vient après le rejet : elle est une finition orale, et
 		// juger la densité technique d'une ligne à laquelle on vient d'ajouter un
 		// point ferait basculer les cas limites de symbolFraction.
-		out = append(out, ponctuer(clean))
+		for _, morceau := range couper(clean, maxLineLen) {
+			out = append(out, ponctuer(morceau))
+		}
 	}
 	return out
+}
+
+// codeInline remplace chaque `code` qui se dit comme un mot (un identifiant,
+// un nom de fichier) par son contenu, « _ » changé en espace. ok est faux dès
+// qu'un passage ne se dit pas (une commande, un appel, un chemin) : la ligne
+// entière est alors écartée, comme avant.
+func codeInline(line string) (string, bool) {
+	ok := true
+	line = codeRe.ReplaceAllStringFunc(line, func(m string) string {
+		mot := strings.Trim(m, "`")
+		if !motRe.MatchString(mot) {
+			ok = false
+			return m
+		}
+		return strings.ReplaceAll(mot, "_", " ")
+	})
+	return line, ok
+}
+
+// couper découpe une ligne trop longue pour être dite d'un trait. La coupe
+// tombe de préférence après une virgule, un point-virgule ou un deux-points,
+// à défaut entre deux mots. Le moteur ne découpe lui-même que sur la
+// ponctuation forte, une proposition interminable lui arriverait entière.
+func couper(line string, max int) []string {
+	var out []string
+	for {
+		r := []rune(line)
+		if len(r) <= max {
+			return append(out, line)
+		}
+		cut := -1
+		for i := max; i > 0; i-- {
+			if r[i] == ' ' && strings.ContainsRune(",;:", r[i-1]) {
+				cut = i
+				break
+			}
+		}
+		if cut < 0 {
+			for i := max; i > 0; i-- {
+				if r[i] == ' ' {
+					cut = i
+					break
+				}
+			}
+		}
+		if cut < 0 {
+			cut = max
+		}
+		out = append(out, strings.TrimSpace(string(r[:cut])))
+		line = strings.TrimSpace(string(r[cut:]))
+	}
 }
 
 // decorate retire la syntaxe markdown décorative (titres, emphase, citation) et
@@ -114,9 +176,6 @@ func reject(line string) bool {
 		return true
 	}
 	if urlRe.MatchString(line) || pathRe.MatchString(line) || cmdRe.MatchString(line) {
-		return true
-	}
-	if len([]rune(line)) > maxLineLen {
 		return true
 	}
 	return symbolFraction(line) > maxSymbolFrac
